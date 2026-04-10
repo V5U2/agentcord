@@ -127,19 +127,21 @@ async def system_prompt_command(interaction: discord.Interaction, prompt: Option
 
     user_is_admin = interaction.user.id in config["permissions"]["users"]["admin_ids"]
 
+    if not user_is_admin:
+        await interaction.response.send_message("You don't have permission to view or change the system prompt.", ephemeral=True)
+        return
+
     if prompt is None:
         if current_system_prompt:
             display_prompt = current_system_prompt[:1900] + "..." if len(current_system_prompt) > 1900 else current_system_prompt
             output = f"Current system prompt:\n```\n{display_prompt}\n```"
         else:
             output = "No system prompt is currently set."
-    elif user_is_admin:
+    else:
         current_system_prompt = prompt
         await asyncio.to_thread(save_system_prompt_to_config, prompt)
         output = f"System prompt updated successfully and saved persistently!\n\nNew prompt:\n```\n{prompt[:1900]}{'...' if len(prompt) > 1900 else ''}\n```"
         logging.info("System prompt changed by user %s", interaction.user.id)
-    else:
-        output = "You don't have permission to change the system prompt."
 
     await interaction.response.send_message(output, ephemeral=(interaction.channel.type == discord.ChannelType.private))
 
@@ -309,6 +311,8 @@ async def on_message(new_msg: discord.Message) -> None:
 
                 curr_node.role = "assistant" if curr_msg.author == discord_bot.user else "user"
                 curr_node.user_id = curr_msg.author.id if curr_node.role == "user" else None
+                if curr_node.role == "user" and not accept_usernames and (curr_node.text or curr_node.images):
+                    curr_node.text = f"<@{curr_msg.author.id}>: {curr_node.text}"
 
                 curr_node.has_bad_attachments = len(curr_msg.attachments) > len(good_attachments)
 
