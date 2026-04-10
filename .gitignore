@@ -6,8 +6,16 @@
 
 !*.md
 !*.py
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
+!docs/
+!docs/*.md
 
 !Dockerfile
+!.dockerignore
 !config-example.yaml
 !docker-compose.yaml
 !requirements.txt
+
+llmcord.my-updates.py

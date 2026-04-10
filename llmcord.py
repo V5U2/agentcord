@@ -8,8 +8,21 @@ from typing import Any, Literal, Optional
 import discord
 from discord.app_commands import Choice
 from discord.ext import commands
-from discord.ui import LayoutView, TextDisplay
 import httpx
+
+try:
+    from discord.ui import LayoutView, TextDisplay
+    HAS_LAYOUT_VIEW = True
+    HAS_TEXT_DISPLAY = True
+except ImportError:
+    try:
+        from discord.ui import View, TextDisplay
+        HAS_LAYOUT_VIEW = False
+        HAS_TEXT_DISPLAY = True
+    except ImportError:
+        from discord.ui import View
+        HAS_LAYOUT_VIEW = False
+        HAS_TEXT_DISPLAY = False
 from openai import AsyncOpenAI
 import yaml
 
@@ -19,6 +32,7 @@ logging.basicConfig(
 )
 
 VISION_MODEL_TAGS = ("claude", "gemini", "gemma", "gpt-4", "gpt-5", "grok-4", "llama", "llava", "mistral", "o3", "o4", "vision", "vl")
+PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
 
 EMBED_COLOR_COMPLETE = discord.Color.dark_green()
 EMBED_COLOR_INCOMPLETE = discord.Color.orange()
@@ -34,8 +48,21 @@ def get_config(filename: str = "config.yaml") -> dict[str, Any]:
         return yaml.safe_load(file)
 
 
+def save_system_prompt_to_config(prompt: str, filename: str = "config.yaml") -> None:
+    config_data = get_config(filename)
+    config_data["system_prompt"] = prompt
+
+    with open(filename, "w", encoding="utf-8") as file:
+        yaml.dump(config_data, file, default_flow_style=False, allow_unicode=True)
+
+
+def load_system_prompt_from_config(filename: str = "config.yaml") -> str:
+    return get_config(filename).get("system_prompt", "")
+
+
 config = get_config()
 curr_model = next(iter(config["models"]))
+current_system_prompt = load_system_prompt_from_config()
 
 msg_nodes = {}
 last_task_time = 0
@@ -50,10 +77,11 @@ httpx_client = httpx.AsyncClient()
 
 @dataclass
 class MsgNode:
-    role: Literal["user", "assistant"] = "assistant"
-
     text: Optional[str] = None
     images: list[dict[str, Any]] = field(default_factory=list)
+
+    role: Literal["user", "assistant"] = "assistant"
+    user_id: Optional[int] = None
 
     has_bad_attachments: bool = False
     fetch_parent_failed: bool = False
@@ -93,12 +121,104 @@ async def model_autocomplete(interaction: discord.Interaction, curr_str: str) ->
     return choices[:25]
 
 
+@discord_bot.tree.command(name="system_prompt", description="View or change the system prompt")
+async def system_prompt_command(interaction: discord.Interaction, prompt: Optional[str] = None) -> None:
+    global current_system_prompt
+
+    user_is_admin = interaction.user.id in config["permissions"]["users"]["admin_ids"]
+
+    if prompt is None:
+        if current_system_prompt:
+            display_prompt = current_system_prompt[:1900] + "..." if len(current_system_prompt) > 1900 else current_system_prompt
+            output = f"Current system prompt:\n```\n{display_prompt}\n```"
+        else:
+            output = "No system prompt is currently set."
+    elif user_is_admin:
+        current_system_prompt = prompt
+        await asyncio.to_thread(save_system_prompt_to_config, prompt)
+        output = f"System prompt updated successfully and saved persistently!\n\nNew prompt:\n```\n{prompt[:1900]}{'...' if len(prompt) > 1900 else ''}\n```"
+        logging.info("System prompt changed by user %s", interaction.user.id)
+    else:
+        output = "You don't have permission to change the system prompt."
+
+    await interaction.response.send_message(output, ephemeral=(interaction.channel.type == discord.ChannelType.private))
+
+
+@discord_bot.tree.command(name="reload_config", description="Reload the configuration file")
+async def reload_config_command(interaction: discord.Interaction) -> None:
+    global config, current_system_prompt
+
+    user_is_admin = interaction.user.id in config["permissions"]["users"]["admin_ids"]
+
+    if user_is_admin:
+        try:
+            config = await asyncio.to_thread(get_config)
+            current_system_prompt = await asyncio.to_thread(load_system_prompt_from_config)
+            output = "Configuration reloaded successfully!"
+            logging.info("Config reloaded by user %s", interaction.user.id)
+        except Exception as exc:
+            output = f"Failed to reload config: {exc}"
+            logging.error("Config reload failed: %s", exc)
+    else:
+        output = "You don't have permission to reload the configuration."
+
+    await interaction.response.send_message(output, ephemeral=(interaction.channel.type == discord.ChannelType.private))
+
+
+@discord_bot.tree.command(name="sync_commands", description="Force sync slash commands (admin only)")
+async def sync_commands_command(interaction: discord.Interaction) -> None:
+    user_is_admin = interaction.user.id in config["permissions"]["users"]["admin_ids"]
+
+    if not user_is_admin:
+        await interaction.response.send_message("You don't have permission to sync commands.", ephemeral=True)
+        return
+
+    try:
+        synced = await discord_bot.tree.sync()
+        output = f"Successfully synced {len(synced)} slash commands!"
+        logging.info("Commands synced by user %s: %s", interaction.user.id, [cmd.name for cmd in synced])
+    except Exception as exc:
+        output = f"Failed to sync commands: {exc}"
+        logging.error("Command sync failed: %s", exc)
+
+    await interaction.response.send_message(output, ephemeral=True)
+
+
+@discord_bot.tree.command(name="show_system_prompt", description="Show the current system prompt (admin only)")
+async def show_system_prompt_command(interaction: discord.Interaction) -> None:
+    user_is_admin = interaction.user.id in config["permissions"]["users"]["admin_ids"]
+
+    if not user_is_admin:
+        await interaction.response.send_message("You don't have permission to view the system prompt.", ephemeral=True)
+        return
+
+    if current_system_prompt:
+        if len(current_system_prompt) > 1900:
+            chunks = [current_system_prompt[i : i + 1900] for i in range(0, len(current_system_prompt), 1900)]
+            await interaction.response.send_message(
+                f"**Current System Prompt:** (Part 1/{len(chunks)})\n```\n{chunks[0]}\n```",
+                ephemeral=True,
+            )
+            for idx, chunk in enumerate(chunks[1:], 2):
+                await interaction.followup.send(f"**System Prompt (Part {idx}/{len(chunks)}):**\n```\n{chunk}\n```", ephemeral=True)
+            return
+
+        await interaction.response.send_message(f"**Current System Prompt:**\n```\n{current_system_prompt}\n```", ephemeral=True)
+        return
+
+    await interaction.response.send_message("No system prompt is currently set.", ephemeral=True)
+
+
 @discord_bot.event
 async def on_ready() -> None:
     if client_id := config.get("client_id"):
         logging.info(f"\n\nBOT INVITE URL:\nhttps://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot\n")
 
-    await discord_bot.tree.sync()
+    try:
+        synced = await discord_bot.tree.sync()
+        logging.info("Successfully synced %s slash commands: %s", len(synced), [cmd.name for cmd in synced])
+    except Exception as exc:
+        logging.error("Failed to sync slash commands: %s", exc)
 
 
 @discord_bot.event
@@ -152,6 +272,7 @@ async def on_message(new_msg: discord.Message) -> None:
     extra_body = (provider_config.get("extra_body") or {}) | (model_parameters or {}) or None
 
     accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
+    accept_usernames = any(provider_slash_model.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
 
     max_text = config.get("max_text", 100000)
     max_images = config.get("max_images", 5) if accept_images else 0
@@ -173,8 +294,6 @@ async def on_message(new_msg: discord.Message) -> None:
 
                 attachment_responses = await asyncio.gather(*[httpx_client.get(att.url) for att in good_attachments])
 
-                curr_node.role = "assistant" if curr_msg.author == discord_bot.user else "user"
-
                 curr_node.text = "\n".join(
                     ([cleaned_content] if cleaned_content else [])
                     + ["\n".join(filter(None, (embed.title, embed.description, embed.footer.text))) for embed in curr_msg.embeds]
@@ -188,8 +307,8 @@ async def on_message(new_msg: discord.Message) -> None:
                     if att.content_type.startswith("image")
                 ]
 
-                if curr_node.role == "user" and (curr_node.text or curr_node.images):
-                    curr_node.text = f"<@{curr_msg.author.id}>: {curr_node.text}"
+                curr_node.role = "assistant" if curr_msg.author == discord_bot.user else "user"
+                curr_node.user_id = curr_msg.author.id if curr_node.role == "user" else None
 
                 curr_node.has_bad_attachments = len(curr_msg.attachments) > len(good_attachments)
 
@@ -217,12 +336,16 @@ async def on_message(new_msg: discord.Message) -> None:
                     curr_node.fetch_parent_failed = True
 
             if curr_node.images[:max_images]:
-                content = [dict(type="text", text=curr_node.text[:max_text])] + curr_node.images[:max_images]
+                content = ([dict(type="text", text=curr_node.text[:max_text])] if curr_node.text[:max_text] else []) + curr_node.images[:max_images]
             else:
                 content = curr_node.text[:max_text]
 
             if content != "":
-                messages.append(dict(content=content, role=curr_node.role))
+                message = dict(content=content, role=curr_node.role)
+                if accept_usernames and curr_node.user_id is not None:
+                    message["name"] = str(curr_node.user_id)
+
+                messages.append(message)
 
             if len(curr_node.text) > max_text:
                 user_warnings.add(f"⚠️ Max {max_text:,} characters per message")
@@ -237,10 +360,12 @@ async def on_message(new_msg: discord.Message) -> None:
 
     logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
 
-    if system_prompt := config.get("system_prompt"):
+    if current_system_prompt:
         now = datetime.now().astimezone()
 
-        system_prompt = system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
+        system_prompt = current_system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
+        if accept_usernames:
+            system_prompt += "\n\nUser's names are their Discord IDs and should be typed as '<@ID>'."
 
         messages.append(dict(role="system", content=system_prompt))
 
@@ -311,7 +436,14 @@ async def on_message(new_msg: discord.Message) -> None:
 
             if use_plain_responses:
                 for content in response_contents:
-                    await reply_helper(view=LayoutView().add_item(TextDisplay(content=content)))
+                    if HAS_LAYOUT_VIEW and HAS_TEXT_DISPLAY:
+                        await reply_helper(view=LayoutView().add_item(TextDisplay(content=content)))
+                    elif HAS_TEXT_DISPLAY:
+                        view = View()
+                        view.add_item(TextDisplay(content=content))
+                        await reply_helper(view=view)
+                    else:
+                        await reply_helper(content=content)
 
     except Exception:
         logging.exception("Error while generating response")

@@ -1,16 +1,27 @@
 <h1 align="center">
-  llmcord
+  agentcord
 </h1>
 
 <h3 align="center"><i>
-  Talk to LLMs with your friends!
+  Discord as an LLM frontend, extended into an advanced self-hosted fork.
 </i></h3>
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/7791cc6b-6755-484f-a9e3-0707765b081f" alt="">
 </p>
 
-llmcord transforms Discord into a collaborative LLM frontend. It works with practically any LLM, remote or locally hosted.
+`agentcord` is an independent fork of the original `llmcord` project. It keeps the same core idea, Discord as a collaborative frontend for LLMs, but builds on it with stronger runtime controls, better packaging, and an opinionated release path for self-hosting.
+
+The original upstream project is [jakobdylanc/llmcord](https://github.com/jakobdylanc/llmcord). This fork is maintained at [V5U2/llmcord](https://github.com/V5U2/llmcord).
+
+## What This Fork Adds
+
+- Live admin commands for model switching, system prompt management, config reloads, and command syncing
+- Persistent system prompt updates stored back into `config.yaml`
+- Better provider-specific user identity handling for OpenAI-style `name` fields
+- Docker packaging and compose-based local deployment
+- GitHub Actions for SemVer releases and container publishing to GHCR
+- Explicit upstream-sync and fork-maintenance docs for long-term ownership
 
 ## Features
 
@@ -32,7 +43,7 @@ Additionally:
 ### Model switching with `/model`:
 ![image](https://github.com/user-attachments/assets/568e2f5c-bf32-4b77-ab57-198d9120f3d2)
 
-llmcord supports remote models from:
+agentcord supports remote models from:
 - [OpenAI API](https://platform.openai.com/docs/models)
 - [xAI API](https://docs.x.ai/docs/models)
 - [Google Gemini API](https://ai.google.dev/gemini-api/docs/models)
@@ -49,13 +60,27 @@ Or run local models with:
 
 ---
 
+### Runtime admin commands:
+
+Admins can manage the bot without restarting it:
+- `/model` to switch the active model
+- `/system_prompt` to view or update the live system prompt
+- `/show_system_prompt` to view the full stored system prompt
+- `/reload_config` to reload `config.yaml`
+- `/sync_commands` to force Discord slash command sync
+
+System prompt changes made through `/system_prompt` are persisted back to `config.yaml`.
+
+---
+
 ### And more:
 - Supports image attachments when using a vision model (like gpt-5, grok-4, claude-4, etc.)
 - Supports text file attachments (.txt, .py, .c, etc.)
-- Customizable personality (aka system prompt)
-- Distinguishes users via their Discord IDs
+- Customizable personality (aka system prompt), including live updates from Discord
+- Distinguishes users via their Discord IDs, with native per-user message names for supported providers
 - Streamed responses (turns green when complete, automatically splits into separate messages when too long)
 - Hot reloading config (you can change settings without restarting the bot)
+- Compatible with older and newer `discord.py` UI APIs when using plain responses
 - Displays helpful warnings when appropriate (like "⚠️ Only using last 25 messages" when the customizable message limit is exceeded)
 - Caches message data in a size-managed (no memory leaks) and mutex-protected (no race conditions) global dictionary to maximize efficiency and minimize Discord API calls
 - Fully asynchronous
@@ -65,11 +90,11 @@ Or run local models with:
 
 1. Clone the repo:
    ```bash
-   git clone https://github.com/jakobdylanc/llmcord
+   git clone https://github.com/V5U2/llmcord
    cd llmcord
    ```
 
-2. Create a copy of "config-example.yaml" named "config.yaml" and set it up:
+2. Create a copy of `config-example.yaml` named `config.yaml` and set it up:
 
 ### Discord settings:
 
@@ -83,7 +108,7 @@ Or run local models with:
 | **max_messages** | The maximum number of messages allowed in a reply chain. When exceeded, the oldest messages are dropped.<br /><br />Default: `25` |
 | **use_plain_responses** | When set to `true` the bot will use plaintext responses instead of embeds. Plaintext responses have a shorter character limit so the bot's messages may split more often.<br /><br />Default: `false`<br /><br />**Also disables streamed responses and warning messages.** |
 | **allow_dms** | Set to `false` to disable direct message access.<br /><br />Default: `true` |
-| **permissions** | Configure access permissions for `users`, `roles` and `channels`, each with a list of `allowed_ids` and `blocked_ids`.<br /><br />Control which `users` are admins with `admin_ids`. Admins can change the model with `/model` and DM the bot even if `allow_dms` is `false`.<br /><br />**Leave `allowed_ids` empty to allow ALL in that category.**<br /><br />**Role and channel permissions do not affect DMs.**<br /><br />**You can use [category](https://support.discord.com/hc/en-us/articles/115001580171-Channel-Categories-101) IDs to control channel permissions in groups.** |
+| **permissions** | Configure access permissions for `users`, `roles` and `channels`, each with a list of `allowed_ids` and `blocked_ids`.<br /><br />Control which `users` are admins with `admin_ids`. Admins can change the model with `/model`, manage the system prompt with `/system_prompt` and `/show_system_prompt`, reload `config.yaml` with `/reload_config`, sync slash commands with `/sync_commands`, and DM the bot even if `allow_dms` is `false`.<br /><br />**Leave `allowed_ids` empty to allow ALL in that category.**<br /><br />**Role and channel permissions do not affect DMs.**<br /><br />**You can use [category](https://support.discord.com/hc/en-us/articles/115001580171-Channel-Categories-101) IDs to control channel permissions in groups.** |
 
 ### LLM settings:
 
@@ -91,7 +116,7 @@ Or run local models with:
 | --- | --- |
 | **providers** | Add the LLM providers you want to use, each with a `base_url` and optional `api_key` entry. Popular providers (`openai`, `openrouter`, `ollama`, etc.) are already included.<br /><br />**Only supports OpenAI compatible APIs.**<br /><br />**Some providers may need `extra_headers` / `extra_query` / `extra_body` entries for extra HTTP data. See the included `azure-openai` provider for an example.** |
 | **models** | Add the models you want to use in `<provider>/<model>: <parameters>` format (examples are included). When you run `/model` these models will show up as autocomplete suggestions.<br /><br />**Refer to each provider's documentation for supported parameters.**<br /><br />**The first model in your `models` list will be the default model at startup.**<br /><br />**Some vision models may need `:vision` added to the end of their name to enable image support.** |
-| **system_prompt** | Write anything you want to customize the bot's behavior!<br /><br />**Leave blank for no system prompt.**<br /><br />**You can use the `{date}` and `{time}` tags in your system prompt to insert the current date and time, based on your host computer's time zone.**<br /><br />**It is recommended to include something like `"User messages are prefixed with their Discord ID as <@ID>. Use this format to mention users."` in your system prompt to help the bot understand the user message format.** |
+| **system_prompt** | Write anything you want to customize the bot's behavior!<br /><br />**Leave blank for no system prompt.**<br /><br />**You can use the `{date}` and `{time}` tags in your system prompt to insert the current date and time, based on your host computer's time zone.**<br /><br />This value is loaded at startup and can also be changed live with `/system_prompt`, which saves the new value back to `config.yaml`.<br /><br />For providers that support OpenAI-style message names (currently `openai` and `x-ai`), `agentcord` sends Discord user IDs in the `name` field and automatically appends guidance telling the model to mention users as `<@ID>`. For other providers, it is still recommended to include something like `"User messages are prefixed with their Discord ID as <@ID>. Use this format to mention users."` in your system prompt. |
 
 3. Run the bot:
 
@@ -106,18 +131,51 @@ Or run local models with:
    docker compose up
    ```
 
+   The compose setup mounts `./config.yaml` into the container as `/app/config.yaml`.
+
+   If you use local providers such as Ollama, LM Studio, or vLLM on the host machine while llmcord runs in Docker, change their `base_url` values from `localhost` to `host.docker.internal`.
+
+## Docker image
+
+- Local build:
+  ```bash
+  docker build -t agentcord:local .
+  ```
+- Local run:
+  ```bash
+  docker run --rm \
+    --add-host host.docker.internal:host-gateway \
+    -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
+    agentcord:local
+  ```
+- GitHub Actions publishes images to `ghcr.io/v5u2/agentcord`.
+
+## Releases
+
+- `.github/workflows/release-please.yml` runs on pushes to `main` and manages SemVer GitHub releases using conventional commits.
+- `.github/workflows/docker-image.yml` builds the container on pushes and pull requests, and publishes to GHCR for non-PR runs.
+- To get predictable version bumps, use conventional commit prefixes such as `feat:`, `fix:`, `docs:`, `refactor:`, and `chore:`.
+
+## Upstream Relationship
+
+- This repo is a periodically synced fork, not a strict mirror.
+- `origin` is your maintained fork: `https://github.com/V5U2/llmcord`
+- `upstream` tracks the original project: `https://github.com/jakobdylanc/llmcord`
+- See [docs/UPSTREAM.md](/Users/james/Documents/Development/llmcord/docs/UPSTREAM.md) for the sync policy and workflow.
+- See [docs/PRODUCT_DIRECTION.md](/Users/james/Documents/Development/llmcord/docs/PRODUCT_DIRECTION.md) for `agentcord`’s product goals.
+
 ## Notes
 
-- If you're having issues, try my suggestions [here](https://github.com/jakobdylanc/llmcord/issues/19)
+- If you hit a problem, open or review issues in [V5U2/llmcord issues](https://github.com/V5U2/llmcord/issues).
 
 - PRs are welcome :)
 
 ## Star History
 
-<a href="https://star-history.com/#jakobdylanc/llmcord&Date">
+<a href="https://star-history.com/#V5U2/llmcord&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=jakobdylanc/llmcord&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=jakobdylanc/llmcord&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=jakobdylanc/llmcord&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=V5U2/llmcord&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=V5U2/llmcord&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=V5U2/llmcord&type=Date" />
   </picture>
 </a>
