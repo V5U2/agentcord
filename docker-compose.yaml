@@ -1,7 +1,10 @@
 services:
-  container:
-    build: .
-    network_mode: host
+  agentcord:
+    build:
+      context: .
+    image: ghcr.io/v5u2/agentcord:dev
     restart: unless-stopped
+    extra_hosts:
+      - host.docker.internal:host-gateway
     volumes:
-      - ./:/app:ro
+      - ./config.yaml:/app/config.yaml:ro

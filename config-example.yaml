@@ -61,6 +61,8 @@ providers:
     api_key: 
 
   # Local providers:
+  # If llmcord runs in Docker and the model server runs on your host machine,
+  # replace localhost with host.docker.internal in the URLs below.
   lmstudio:
     base_url: http://localhost:1234/v1
 
