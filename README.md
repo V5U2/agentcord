@@ -12,7 +12,7 @@
 
 `agentcord` is an independent fork of the original `llmcord` project. It keeps the same core idea, Discord as a collaborative frontend for LLMs, but builds on it with stronger runtime controls, better packaging, and an opinionated release path for self-hosting.
 
-The original upstream project is [jakobdylanc/llmcord](https://github.com/jakobdylanc/llmcord). This fork is maintained at [V5U2/llmcord](https://github.com/V5U2/llmcord).
+The original upstream project is [jakobdylanc/llmcord](https://github.com/jakobdylanc/llmcord). This fork is maintained at [V5U2/agentcord](https://github.com/V5U2/agentcord).
 
 ## What This Fork Adds
 
@@ -90,8 +90,8 @@ System prompt changes made through `/system_prompt` are persisted back to `confi
 
 1. Clone the repo:
    ```bash
-   git clone https://github.com/V5U2/llmcord
-   cd llmcord
+   git clone https://github.com/V5U2/agentcord
+   cd agentcord
    ```
 
 2. Create a copy of `config-example.yaml` named `config.yaml` and set it up:
@@ -131,7 +131,7 @@ System prompt changes made through `/system_prompt` are persisted back to `confi
    docker compose up
    ```
 
-   The compose setup mounts `./config.yaml` into the container as `/app/config.yaml`.
+   The compose setup mounts `./config.yaml` into the container as `/app/config.yaml` with write access so admin prompt updates can be persisted.
 
    If you use local providers such as Ollama, LM Studio, or vLLM on the host machine while llmcord runs in Docker, change their `base_url` values from `localhost` to `host.docker.internal`.
 
@@ -142,40 +142,40 @@ System prompt changes made through `/system_prompt` are persisted back to `confi
   docker build -t agentcord:local .
   ```
 - Local run:
-  ```bash
-  docker run --rm \
-    --add-host host.docker.internal:host-gateway \
-    -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
-    agentcord:local
-  ```
+    ```bash
+    docker run --rm \
+      --add-host host.docker.internal:host-gateway \
+      -v "$(pwd)/config.yaml:/app/config.yaml" \
+      agentcord:local
+    ```
 - GitHub Actions publishes images to `ghcr.io/v5u2/agentcord`.
 
 ## Releases
 
 - `.github/workflows/release-please.yml` runs on pushes to `main` and manages SemVer GitHub releases using conventional commits.
-- `.github/workflows/docker-image.yml` builds the container on pushes and pull requests, and publishes to GHCR for non-PR runs.
+- `.github/workflows/docker-image.yml` builds the container on pull requests and on `main`/tag/release events, and publishes to GHCR for non-PR runs.
 - To get predictable version bumps, use conventional commit prefixes such as `feat:`, `fix:`, `docs:`, `refactor:`, and `chore:`.
 
 ## Upstream Relationship
 
 - This repo is a periodically synced fork, not a strict mirror.
-- `origin` is your maintained fork: `https://github.com/V5U2/llmcord`
+- `origin` is your maintained fork: `https://github.com/V5U2/agentcord`
 - `upstream` tracks the original project: `https://github.com/jakobdylanc/llmcord`
 - See [docs/UPSTREAM.md](/Users/james/Documents/Development/llmcord/docs/UPSTREAM.md) for the sync policy and workflow.
 - See [docs/PRODUCT_DIRECTION.md](/Users/james/Documents/Development/llmcord/docs/PRODUCT_DIRECTION.md) for `agentcord`’s product goals.
 
 ## Notes
 
-- If you hit a problem, open or review issues in [V5U2/llmcord issues](https://github.com/V5U2/llmcord/issues).
+- If you hit a problem, open or review issues in [V5U2/agentcord issues](https://github.com/V5U2/agentcord/issues).
 
 - PRs are welcome :)
 
 ## Star History
 
-<a href="https://star-history.com/#V5U2/llmcord&Date">
+<a href="https://star-history.com/#V5U2/agentcord&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=V5U2/llmcord&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=V5U2/llmcord&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=V5U2/llmcord&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=V5U2/agentcord&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=V5U2/agentcord&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=V5U2/agentcord&type=Date" />
   </picture>
 </a>

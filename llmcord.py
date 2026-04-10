@@ -138,10 +138,15 @@ async def system_prompt_command(interaction: discord.Interaction, prompt: Option
         else:
             output = "No system prompt is currently set."
     else:
-        current_system_prompt = prompt
-        await asyncio.to_thread(save_system_prompt_to_config, prompt)
-        output = f"System prompt updated successfully and saved persistently!\n\nNew prompt:\n```\n{prompt[:1900]}{'...' if len(prompt) > 1900 else ''}\n```"
-        logging.info("System prompt changed by user %s", interaction.user.id)
+        try:
+            await asyncio.to_thread(save_system_prompt_to_config, prompt)
+        except Exception as exc:
+            logging.exception("Failed to persist system prompt")
+            output = f"Failed to update system prompt: {exc}"
+        else:
+            current_system_prompt = prompt
+            output = f"System prompt updated successfully and saved persistently!\n\nNew prompt:\n```\n{prompt[:1900]}{'...' if len(prompt) > 1900 else ''}\n```"
+            logging.info("System prompt changed by user %s", interaction.user.id)
 
     await interaction.response.send_message(output, ephemeral=(interaction.channel.type == discord.ChannelType.private))
 
@@ -225,7 +230,7 @@ async def on_ready() -> None:
 
 @discord_bot.event
 async def on_message(new_msg: discord.Message) -> None:
-    global last_task_time
+    global current_system_prompt, last_task_time
 
     is_dm = new_msg.channel.type == discord.ChannelType.private
 
@@ -236,6 +241,7 @@ async def on_message(new_msg: discord.Message) -> None:
     channel_ids = set(filter(None, (new_msg.channel.id, getattr(new_msg.channel, "parent_id", None), getattr(new_msg.channel, "category_id", None))))
 
     config = await asyncio.to_thread(get_config)
+    current_system_prompt = config.get("system_prompt", "")
 
     allow_dms = config.get("allow_dms", True)
 
