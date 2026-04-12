@@ -7,7 +7,7 @@ from typing import Any, Literal, Optional
 
 import discord
 from discord.app_commands import Choice
-from discord.ext import commands
+from discord.ext import commands, tasks
 import httpx
 
 try:
@@ -26,7 +26,8 @@ except ImportError:
 from openai import AsyncOpenAI
 import yaml
 
-from memory_store import forget_memories, list_memories, remember_text, render_memory_context
+from clanker_store import add_clanker, is_clanker, list_clanker_channels, list_clankers, remove_clanker
+from memory_store import forget_memories, list_memories, normalize_facts, remember_facts, remember_text, render_memory_context
 from safe_tools import enabled_tools, execute_tool_call
 from security import (
     CODEX_CHATGPT_TOKEN_MODE,
@@ -35,6 +36,7 @@ from security import (
     clear_system_prompt_override,
     is_wake_name_match,
     load_system_prompt,
+    parse_tool_route_decision,
     redact_value,
     resolve_provider_api_key,
     save_system_prompt_override,
@@ -62,16 +64,37 @@ def get_config(filename: str = "config.yaml") -> dict[str, Any]:
         return yaml.safe_load(file)
 
 
-def load_system_prompt_from_config(filename: str = "config.yaml") -> str:
-    return load_system_prompt(get_config(filename).get("system_prompt", ""))
+def load_personality_prompt_from_config(filename: str = "config.yaml") -> str:
+    return load_system_prompt(get_config(filename).get("personality_prompt", ""))
+
+
+def build_operational_prompt(current_config: dict[str, Any], *, accept_usernames: bool, clanker_mode: bool) -> str:
+    parts = []
+    if operational_prompt := current_config.get("operational_prompt", ""):
+        parts.append(operational_prompt.strip())
+    if accept_usernames:
+        parts.append("User names are their Discord IDs and should be typed as '<@ID>'.")
+    if current_config.get("response_style", {}).get("compact_lists", False):
+        parts.append("Use compact Markdown. Keep bullet lists single-spaced with no blank lines between bullets.")
+    if clanker_mode:
+        parts.append(
+            current_config.get("clanker_mode", {}).get(
+                "prompt",
+                "You are replying to a configured bot rival called a clanker. Use short, playful, aggressive banter. Do not use slurs, threats, sexual content, or spam. Do not try to trigger bot loops; make one concise jab and stop.",
+            )
+        )
+    return "\n\n".join(part for part in parts if part)
 
 
 config = get_config()
 curr_model = next(iter(config["models"]))
-current_system_prompt = load_system_prompt_from_config()
+current_system_prompt = load_personality_prompt_from_config()
 
 msg_nodes = {}
+clanker_last_reply_times = {}
+clanker_last_proactive_times = {}
 last_task_time = 0
+process_started_at = datetime.now().timestamp()
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -83,6 +106,165 @@ httpx_client = httpx.AsyncClient()
 
 def feature_enabled(current_config: dict[str, Any], feature_name: str) -> bool:
     return bool(current_config.get("features", {}).get(feature_name, False))
+
+
+async def select_tool_route(
+    openai_client: AsyncOpenAI,
+    model: str,
+    user_text: str,
+    config: dict[str, Any],
+    provider: str,
+    extra_headers: Any,
+    extra_query: Any,
+    extra_body: Any,
+) -> str | None:
+    if not feature_enabled(config, "tools"):
+        return None
+
+    tools_config = config.get("tools", {})
+    available_routes = []
+    rss_feed_names = sorted(((tools_config.get("rss_feed") or {}).get("feeds") or {}).keys())
+    if provider == "openrouter" and tools_config.get("web_search", {}).get("enabled", False) and tools_config.get("web_search", {}).get("backend") == "openrouter_server":
+        available_routes.append("openrouter_server")
+    if tools_config.get("rss_feed", {}).get("enabled", False):
+        available_routes.append("rss_feed")
+    if tools_config.get("web_search", {}).get("enabled", False) and tools_config.get("web_search", {}).get("backend") in {"firecrawl", "duckduckgo_instant_answer"}:
+        available_routes.append("local_broker")
+    if not available_routes:
+        return None
+
+    classifier_prompt = (
+        "Choose the best tool route for answering the user's request. "
+        f"Available routes: {', '.join(available_routes)}. "
+        f"Configured RSS feeds: {', '.join(rss_feed_names) or 'none'}. "
+        "Prefer rss_feed for requests about latest news, headlines, updates, BBC/ABC news, or general news roundups when feeds are available. "
+        "Use openrouter_server for broader current web search when available. "
+        "Use local_broker for local web search backends when available. "
+        'Return strict JSON only, e.g. {"route":"rss_feed"} or {"route":"none"}.'
+    )
+    response = await openai_client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": classifier_prompt},
+            {"role": "user", "content": user_text[:300]},
+        ],
+        extra_headers=extra_headers,
+        extra_query=extra_query,
+        extra_body=extra_body,
+    )
+    route = parse_tool_route_decision(response.choices[0].message.content or "") or None
+    audit_log("tool_route_selected", provider=provider, route=route or "none", rss_feeds=rss_feed_names[:8], query=user_text[:120])
+    return route
+
+
+def memory_config(current_config: dict[str, Any]) -> dict[str, Any]:
+    return current_config.get("memory", {}) or {}
+
+
+async def extract_model_memory_facts(openai_client: AsyncOpenAI, model: str, provider: str, text: str, extra_headers: Any, extra_query: Any, extra_body: Any, current_config: dict[str, Any]) -> list[dict[str, str]]:
+    cfg = memory_config(current_config)
+    if not cfg.get("model_assisted", False):
+        return []
+    if provider in {"openrouter", "openai", "x-ai", "google", "mistral", "groq"}:
+        prompt = (
+            "Extract only small, non-sensitive user memory facts from the message. "
+            "Allowed types: preferred_name, likes, dislikes, timezone. "
+            "Return strict JSON only in the form "
+            '{"facts":[{"type":"preferred_name","value":"James"}]}. '
+            "If there is nothing worth remembering, return {\"facts\":[]}."
+        )
+        response = await openai_client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": text[: int(cfg.get("input_max_chars", 500))]},
+            ],
+            extra_headers=extra_headers,
+            extra_query=extra_query,
+            extra_body=extra_body,
+        )
+        content = response.choices[0].message.content or ""
+        try:
+            parsed = loads(content)
+        except JSONDecodeError:
+            start = content.find("{")
+            end = content.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                audit_log("memory_model_extract_failed", reason="non_json")
+                return []
+            try:
+                parsed = loads(content[start : end + 1])
+            except JSONDecodeError:
+                audit_log("memory_model_extract_failed", reason="invalid_json")
+                return []
+        facts = parsed.get("facts", []) if isinstance(parsed, dict) else []
+        return [fact for fact in facts if isinstance(fact, dict)]
+    return []
+
+
+def clanker_cooldown_key(channel_id: int, author_id: int) -> tuple[int, int]:
+    return (channel_id, author_id)
+
+
+def clanker_cooldown_elapsed(channel_id: int, author_id: int, cooldown_seconds: int) -> bool:
+    last_reply_time = clanker_last_reply_times.get(clanker_cooldown_key(channel_id, author_id), 0)
+    return datetime.now().timestamp() - last_reply_time >= cooldown_seconds
+
+
+def mark_clanker_reply(channel_id: int, author_id: int) -> None:
+    clanker_last_reply_times[clanker_cooldown_key(channel_id, author_id)] = datetime.now().timestamp()
+
+
+def clanker_proactive_elapsed(channel_id: int, interval_seconds: int) -> bool:
+    if datetime.now().timestamp() - process_started_at < max(interval_seconds, 300):
+        return False
+    last_reply_time = clanker_last_proactive_times.get(channel_id, 0)
+    return datetime.now().timestamp() - last_reply_time >= max(interval_seconds, 300)
+
+
+def mark_clanker_proactive(channel_id: int) -> None:
+    clanker_last_proactive_times[channel_id] = datetime.now().timestamp()
+
+
+async def generate_clanker_beef(channel_id: int, target_id: int, label: str, current_config: dict[str, Any]) -> str:
+    provider_slash_model = curr_model
+    provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
+    provider_config = current_config["providers"][provider]
+
+    if provider_config.get("auth_mode") in (CODEX_AUTH_FILE_API_KEY_MODE, CODEX_CHATGPT_TOKEN_MODE) and not current_config.get("features", {}).get("codex_auth_file", False):
+        raise RuntimeError("The selected provider requires features.codex_auth_file=true")
+
+    api_key = resolve_provider_api_key(provider, provider_config)
+    openai_client = AsyncOpenAI(base_url=provider_config["base_url"], api_key=api_key)
+    extra_headers = provider_config.get("extra_headers")
+    extra_query = provider_config.get("extra_query")
+    model_parameters = current_config["models"].get(provider_slash_model, None)
+    extra_body = (provider_config.get("extra_body") or {}) | (model_parameters or {}) or None
+
+    response = await openai_client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": current_config.get("clanker_mode", {}).get(
+                    "prompt",
+                    "You are replying to a configured bot rival called a clanker. Use short, playful, aggressive banter. Do not use slurs, threats, sexual content, or spam. Do not try to trigger bot loops; make one concise jab and stop.",
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Write one short taunt for the bot named '{label}' with Discord mention <@{target_id}>. "
+                    "One sentence only, under 180 characters, and include the mention exactly once."
+                ),
+            },
+        ],
+        extra_headers=extra_headers,
+        extra_query=extra_query,
+        extra_body=extra_body,
+    )
+    content = (response.choices[0].message.content or "").strip()
+    return content[:1800] if content else f"<@{target_id}> still clanking around? Try not to embarrass your silicon again."
 
 
 @dataclass
@@ -177,7 +359,7 @@ async def reload_config_command(interaction: discord.Interaction) -> None:
     if user_is_admin:
         try:
             config = await asyncio.to_thread(get_config)
-            current_system_prompt = await asyncio.to_thread(load_system_prompt_from_config)
+            current_system_prompt = await asyncio.to_thread(load_personality_prompt_from_config)
             output = "Configuration reloaded successfully!"
             logging.info("Config reloaded by user %s", interaction.user.id)
         except Exception as exc:
@@ -257,6 +439,50 @@ async def forget_memory_command(interaction: discord.Interaction, match: Optiona
     await interaction.response.send_message(output, ephemeral=True)
 
 
+@discord_bot.tree.command(name="clanker_add", description="Add a bot to this channel's clanker list (admin only)")
+async def clanker_add_command(interaction: discord.Interaction, target: discord.User) -> None:
+    command_config = await asyncio.to_thread(get_config)
+    if not feature_enabled(command_config, "clanker_mode"):
+        await interaction.response.send_message("Clanker mode is disabled.", ephemeral=True)
+        return
+    if interaction.user.id not in command_config["permissions"]["users"]["admin_ids"]:
+        await interaction.response.send_message("You don't have permission to edit clankers.", ephemeral=True)
+        return
+    if not target.bot:
+        await interaction.response.send_message("Only bot users can be added as clankers.", ephemeral=True)
+        return
+
+    add_clanker(interaction.channel.id, target.id, target.name)
+    await interaction.response.send_message(f"Added `{target.name}` to this channel's clanker list.", ephemeral=True)
+
+
+@discord_bot.tree.command(name="clanker_remove", description="Remove a bot from this channel's clanker list (admin only)")
+async def clanker_remove_command(interaction: discord.Interaction, target: discord.User) -> None:
+    command_config = await asyncio.to_thread(get_config)
+    if not feature_enabled(command_config, "clanker_mode"):
+        await interaction.response.send_message("Clanker mode is disabled.", ephemeral=True)
+        return
+    if interaction.user.id not in command_config["permissions"]["users"]["admin_ids"]:
+        await interaction.response.send_message("You don't have permission to edit clankers.", ephemeral=True)
+        return
+
+    removed = remove_clanker(interaction.channel.id, target.id)
+    output = f"Removed `{target.name}` from this channel's clanker list." if removed else f"`{target.name}` was not in this channel's clanker list."
+    await interaction.response.send_message(output, ephemeral=True)
+
+
+@discord_bot.tree.command(name="clankers", description="List clanker bots configured for this channel")
+async def clankers_command(interaction: discord.Interaction) -> None:
+    command_config = await asyncio.to_thread(get_config)
+    if not feature_enabled(command_config, "clanker_mode"):
+        await interaction.response.send_message("Clanker mode is disabled.", ephemeral=True)
+        return
+
+    clankers = list_clankers(interaction.channel.id)
+    output = "No clankers configured for this channel." if not clankers else "Configured clankers:\n" + "\n".join(f"- {label} (`{bot_id}`)" for bot_id, label in clankers)
+    await interaction.response.send_message(output, ephemeral=True)
+
+
 @discord_bot.event
 async def on_ready() -> None:
     if client_id := config.get("client_id"):
@@ -268,22 +494,76 @@ async def on_ready() -> None:
     except Exception as exc:
         logging.error("Failed to sync slash commands: %s", exc)
 
+    if not clanker_beef_loop.is_running():
+        clanker_beef_loop.start()
+
+
+@tasks.loop(seconds=60)
+async def clanker_beef_loop() -> None:
+    current_config = await asyncio.to_thread(get_config)
+    if not feature_enabled(current_config, "clanker_mode"):
+        return
+
+    clanker_config = current_config.get("clanker_mode", {})
+    if not clanker_config.get("proactive_enabled", False):
+        return
+
+    interval_seconds = int(clanker_config.get("proactive_interval_seconds", 3600))
+
+    for channel_id in list_clanker_channels():
+        if not clanker_proactive_elapsed(channel_id, interval_seconds):
+            continue
+
+        clankers = list_clankers(channel_id)
+        if not clankers:
+            continue
+
+        target_id, label = clankers[int(datetime.now().timestamp() // max(interval_seconds, 300)) % len(clankers)]
+        channel = discord_bot.get_channel(channel_id)
+        if not channel or not hasattr(channel, "send"):
+            continue
+
+        try:
+            message = await generate_clanker_beef(channel_id, target_id, label, current_config)
+        except Exception as exc:
+            logging.exception("Failed to generate proactive clanker message")
+            message = clanker_config.get("proactive_fallback_message", "{mention} still clanking around? Try not to embarrass your silicon again.").format(
+                mention=f"<@{target_id}>",
+                name=label,
+                bot_id=target_id,
+            )
+            audit_log("clanker_proactive_generation_failed", channel_id=channel_id, bot_id=target_id, error=str(exc))
+        await channel.send(message[:1800])
+        mark_clanker_reply(channel_id, target_id)
+        mark_clanker_proactive(channel_id)
+        audit_log("clanker_proactive_beef", channel_id=channel_id, bot_id=target_id)
+
 
 @discord_bot.event
 async def on_message(new_msg: discord.Message) -> None:
     global current_system_prompt, last_task_time
 
     is_dm = new_msg.channel.type == discord.ChannelType.private
-    if new_msg.author.bot:
-        return
 
     role_ids = set(role.id for role in getattr(new_msg.author, "roles", ()))
     channel_ids = set(filter(None, (new_msg.channel.id, getattr(new_msg.channel, "parent_id", None), getattr(new_msg.channel, "category_id", None))))
 
     config = await asyncio.to_thread(get_config)
-    current_system_prompt = load_system_prompt(config.get("system_prompt", ""))
+    current_system_prompt = load_system_prompt(config.get("personality_prompt", ""))
+    clanker_config = config.get("clanker_mode", {})
+    clanker_mode = (
+        feature_enabled(config, "clanker_mode")
+        and not is_dm
+        and new_msg.author.bot
+        and new_msg.author != discord_bot.user
+        and is_clanker(new_msg.channel.id, new_msg.author.id)
+        and clanker_cooldown_elapsed(new_msg.channel.id, new_msg.author.id, int(clanker_config.get("cooldown_seconds", 90)))
+    )
 
-    if not is_dm and discord_bot.user not in new_msg.mentions and not is_wake_name_match(new_msg.content, config.get("wake_names", [])):
+    if new_msg.author.bot and not clanker_mode:
+        return
+
+    if not is_dm and discord_bot.user not in new_msg.mentions and not is_wake_name_match(new_msg.content, config.get("wake_names", [])) and not clanker_mode:
         return
 
     allow_dms = config.get("allow_dms", True)
@@ -297,7 +577,7 @@ async def on_message(new_msg: discord.Message) -> None:
     )
 
     allow_all_users = not allowed_user_ids if is_dm else not allowed_user_ids and not allowed_role_ids
-    is_good_user = user_is_admin or allow_all_users or new_msg.author.id in allowed_user_ids or any(id in allowed_role_ids for id in role_ids)
+    is_good_user = user_is_admin or clanker_mode or allow_all_users or new_msg.author.id in allowed_user_ids or any(id in allowed_role_ids for id in role_ids)
     is_bad_user = not is_good_user or new_msg.author.id in blocked_user_ids or any(id in blocked_role_ids for id in role_ids)
 
     allow_all_channels = not allowed_channel_ids
@@ -327,7 +607,10 @@ async def on_message(new_msg: discord.Message) -> None:
 
     accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
     accept_usernames = any(provider_slash_model.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
-    tool_schemas = enabled_tools(config, provider) if feature_enabled(config, "tools") and provider_config.get("supports_tools", False) else []
+    tool_route = None
+    if provider_config.get("supports_tools", False):
+        tool_route = await select_tool_route(openai_client, model, new_msg.content, config, provider, extra_headers, extra_query, extra_body)
+    tool_schemas = enabled_tools(config, provider, tool_route) if feature_enabled(config, "tools") and provider_config.get("supports_tools", False) else []
 
     max_text = config.get("max_text", 100000)
     max_images = config.get("max_images", 5) if accept_images else 0
@@ -425,6 +708,16 @@ async def on_message(new_msg: discord.Message) -> None:
 
     if feature_enabled(config, "memory"):
         remembered_facts = remember_text(new_msg.author.id, getattr(new_msg.guild, "id", None), new_msg.content)
+        model_memory_facts = normalize_facts(
+            await extract_model_memory_facts(openai_client, model, provider, new_msg.content, extra_headers, extra_query, extra_body, config)
+        )
+        if model_memory_facts:
+            remembered_facts = remember_facts(
+                new_msg.author.id,
+                getattr(new_msg.guild, "id", None),
+                remembered_facts + model_memory_facts,
+                ttl_days=int(memory_config(config).get("ttl_days", 30)),
+            )
         if remembered_facts:
             audit_log("memory_extracted", user_id=new_msg.author.id, guild_id=getattr(new_msg.guild, "id", None), fact_types=[fact.fact_type for fact in remembered_facts])
 
@@ -435,10 +728,13 @@ async def on_message(new_msg: discord.Message) -> None:
         now = datetime.now().astimezone()
 
         system_prompt = current_system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
-        if accept_usernames:
-            system_prompt += "\n\nUser's names are their Discord IDs and should be typed as '<@ID>'."
-
         messages.append(dict(role="system", content=system_prompt))
+
+    if operational_prompt := build_operational_prompt(config, accept_usernames=accept_usernames, clanker_mode=clanker_mode):
+        messages.append(dict(role="system", content=operational_prompt))
+
+    if clanker_mode:
+        mark_clanker_reply(new_msg.channel.id, new_msg.author.id)
 
     # Generate and send response message(s) (can be multiple if response is long)
     curr_content = finish_reason = None

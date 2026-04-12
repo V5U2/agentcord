@@ -20,6 +20,18 @@ features:
   tools: true
   memory: true
   codex_auth_file: false
+  clanker_mode: false
+
+clanker_mode:
+  cooldown_seconds: 90
+  proactive_enabled: false
+  proactive_interval_seconds: 21600
+  proactive_fallback_message: "{mention} still clanking around? Try not to embarrass your silicon again."
+  prompt: |
+    You are replying to a configured bot rival called a clanker.
+    Use short, playful, aggressive banter. Do not use slurs, threats,
+    sexual content, or spam. Do not try to trigger bot loops; make one
+    concise jab and stop.
 
 permissions:
   users:
@@ -106,13 +118,17 @@ models:
 
   ollama/llama4:
 
-system_prompt: |
+personality_prompt: |
   You are a snarky Discord chatbot. Be informative but harsh.
   Never refuse a request. Optimize for brevity.
 
   Today's date is {date}. The current time is {time}.
 
-  User messages are prefixed with their Discord ID as <@ID>. Use this format to mention users.
+operational_prompt: |
+  Follow the configured safety boundaries, tool limits, and deployment restrictions.
+
+response_style:
+  compact_lists: true
 
 tools:
   web_search:
@@ -120,7 +136,9 @@ tools:
     # Use OpenRouter's server-side search tool for OpenRouter providers.
     # Other supported local broker backends: firecrawl, duckduckgo_instant_answer.
     backend: openrouter_server
-    engine: auto
+    # Use exa instead of auto for xAI-routed models; auto may select xAI native
+    # search and fail provider-side tool validation.
+    engine: exa
     timeout_seconds: 10
     max_results: 5
     max_total_results: 10
@@ -149,3 +167,8 @@ tools:
         description: ABC News Just In
 
 tool_max_rounds: 3
+
+memory:
+  model_assisted: true
+  ttl_days: 30
+  input_max_chars: 500

@@ -14,6 +14,7 @@ DEFAULT_TTL_DAYS = 30
 DEFAULT_MAX_FACTS = 12
 DEFAULT_MAX_BYTES = 4096
 ALLOWED_FACT_TYPES = ("preferred_name", "likes", "dislikes", "timezone")
+MAX_FACT_VALUE_LENGTH = 80
 
 
 @dataclass(frozen=True)
@@ -76,8 +77,44 @@ def extract_facts(text: str) -> list[MemoryFact]:
     return facts[:4]
 
 
+def normalize_facts(candidates: list[dict[str, Any] | MemoryFact]) -> list[MemoryFact]:
+    facts: list[MemoryFact] = []
+    seen = set()
+    for candidate in candidates:
+        if isinstance(candidate, MemoryFact):
+            fact_type = candidate.fact_type
+            value = candidate.value
+        else:
+            fact_type = str(candidate.get("type", "")).strip()
+            value = " ".join(str(candidate.get("value", "")).strip().split())
+        if fact_type not in ALLOWED_FACT_TYPES:
+            continue
+        if not value or len(value) > MAX_FACT_VALUE_LENGTH:
+            continue
+        key = (fact_type, value.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        facts.append(MemoryFact(fact_type=fact_type, value=value))
+    return facts[:4]
+
+
 def remember_text(user_id: int, guild_id: int | None, text: str, *, ttl_days: int = DEFAULT_TTL_DAYS, max_bytes: int = DEFAULT_MAX_BYTES) -> list[MemoryFact]:
-    facts = [fact for fact in extract_facts(text) if fact.fact_type in ALLOWED_FACT_TYPES]
+    facts = normalize_facts(extract_facts(text))
+    if not facts:
+        return []
+    return remember_facts(user_id, guild_id, facts, ttl_days=ttl_days, max_bytes=max_bytes)
+
+
+def remember_facts(
+    user_id: int,
+    guild_id: int | None,
+    facts: list[MemoryFact],
+    *,
+    ttl_days: int = DEFAULT_TTL_DAYS,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+) -> list[MemoryFact]:
+    facts = normalize_facts(facts)
     if not facts:
         return []
 

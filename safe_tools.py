@@ -12,7 +12,7 @@ from defusedxml import ElementTree as ET
 from security import audit_log, validate_outbound_url
 
 
-def enabled_tools(config: dict[str, Any], provider_name: str | None = None) -> list[dict[str, Any]]:
+def enabled_tools(config: dict[str, Any], provider_name: str | None = None, route: str | None = None) -> list[dict[str, Any]]:
     features = config.get("features", {})
     if not features.get("tools", False):
         return []
@@ -20,22 +20,32 @@ def enabled_tools(config: dict[str, Any], provider_name: str | None = None) -> l
     tool_config = config.get("tools", {})
     tools: list[dict[str, Any]] = []
     web_search_config = tool_config.get("web_search", {})
-    if web_search_config.get("enabled", False) and web_search_config.get("backend") == "openrouter_server" and provider_name == "openrouter":
-        parameters = {
-            key: value
-            for key, value in {
-                "engine": web_search_config.get("engine", "auto"),
-                "max_results": web_search_config.get("max_results", 5),
-                "max_total_results": web_search_config.get("max_total_results"),
-                "search_context_size": web_search_config.get("search_context_size"),
-                "allowed_domains": web_search_config.get("allowed_domains"),
-                "excluded_domains": web_search_config.get("excluded_domains"),
-                "user_location": web_search_config.get("user_location"),
-            }.items()
-            if value is not None
-        }
-        tools.append({"type": "openrouter:web_search", "parameters": parameters})
-    elif web_search_config.get("enabled", False):
+    if route not in (None, "openrouter_server", "local_broker", "rss_feed", "none"):
+        return []
+
+    if route == "none":
+        return []
+
+    if web_search_config.get("enabled", False) and web_search_config.get("backend") == "openrouter_server":
+        if provider_name == "openrouter":
+            if route == "rss_feed":
+                pass
+            else:
+                parameters = {
+                    key: value
+                    for key, value in {
+                        "engine": web_search_config.get("engine", "exa"),
+                        "max_results": web_search_config.get("max_results", 5),
+                        "max_total_results": web_search_config.get("max_total_results"),
+                        "search_context_size": web_search_config.get("search_context_size"),
+                        "allowed_domains": web_search_config.get("allowed_domains"),
+                        "excluded_domains": web_search_config.get("excluded_domains"),
+                        "user_location": web_search_config.get("user_location"),
+                    }.items()
+                    if value is not None
+                }
+                return [{"type": "openrouter:web_search", "parameters": parameters}]
+    elif web_search_config.get("enabled", False) and route != "rss_feed":
         tools.append(
             {
                 "type": "function",
@@ -51,7 +61,7 @@ def enabled_tools(config: dict[str, Any], provider_name: str | None = None) -> l
                 },
             }
         )
-    if tool_config.get("web_fetch", {}).get("enabled", False):
+    if tool_config.get("web_fetch", {}).get("enabled", False) and route in (None, "local_broker"):
         tools.append(
             {
                 "type": "function",
@@ -67,7 +77,7 @@ def enabled_tools(config: dict[str, Any], provider_name: str | None = None) -> l
                 },
             }
         )
-    if tool_config.get("rss_feed", {}).get("enabled", False):
+    if tool_config.get("rss_feed", {}).get("enabled", False) and route in (None, "rss_feed"):
         configured_feeds = sorted((tool_config.get("rss_feed", {}).get("feeds") or {}).keys())
         tools.append(
             {
