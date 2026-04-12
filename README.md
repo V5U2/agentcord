@@ -10,15 +10,18 @@
   <img src="https://github.com/user-attachments/assets/7791cc6b-6755-484f-a9e3-0707765b081f" alt="">
 </p>
 
-`agentcord` is an independent fork of the original `llmcord` project. It keeps the same core idea, Discord as a collaborative frontend for LLMs, but builds on it with stronger runtime controls, better packaging, and an opinionated release path for self-hosting.
+`agentcord` is an independent fork of the original `llmcord` project. It keeps the same core idea, Discord as a collaborative frontend for LLMs, but builds on it with stronger runtime controls, safer secret handling, bounded memory, safe built-in tool use, and an opinionated release path for self-hosting.
 
 The original upstream project is [jakobdylanc/llmcord](https://github.com/jakobdylanc/llmcord). This fork is maintained at [V5U2/agentcord](https://github.com/V5U2/agentcord).
 
 ## What This Fork Adds
 
 - Live admin commands for model switching, system prompt management, config reloads, and command syncing
-- Persistent system prompt updates stored back into `config.yaml`
+- Persistent system prompt overrides stored under the memory root instead of rewriting `config.yaml`
 - Better provider-specific user identity handling for OpenAI-style `name` fields
+- Configurable secret indirection via env vars, files, or Codex auth-file API key reuse
+- Small typed user memory with delete controls
+- Safe built-in skills for read-only web search/fetch with server-side allowlists and limits
 - Docker packaging and compose-based local deployment
 - GitHub Actions for SemVer releases and container publishing to GHCR
 - Explicit upstream-sync and fork-maintenance docs for long-term ownership
@@ -68,8 +71,10 @@ Admins can manage the bot without restarting it:
 - `/show_system_prompt` to view the full stored system prompt
 - `/reload_config` to reload `config.yaml`
 - `/sync_commands` to force Discord slash command sync
+- `/memory` to inspect the small typed facts stored about your user
+- `/forget_memory` to delete those stored facts
 
-System prompt changes made through `/system_prompt` are persisted back to `config.yaml`.
+System prompt changes made through `/system_prompt` are persisted under `data/memory/`, which keeps writable state inside the memory store instead of modifying `config.yaml`.
 
 ---
 
@@ -78,6 +83,9 @@ System prompt changes made through `/system_prompt` are persisted back to `confi
 - Supports text file attachments (.txt, .py, .c, etc.)
 - Customizable personality (aka system prompt), including live updates from Discord
 - Distinguishes users via their Discord IDs, with native per-user message names for supported providers
+- Supports bounded typed memory for small user facts such as preferred names and likes/dislikes
+- Supports safe built-in skills like read-only web search/fetch through server-side allowlists
+- Keeps provider secrets out of model-visible context through env/file indirection and redaction-safe handling
 - Streamed responses (turns green when complete, automatically splits into separate messages when too long)
 - Hot reloading config (you can change settings without restarting the bot)
 - Compatible with older and newer `discord.py` UI APIs when using plain responses
@@ -108,15 +116,19 @@ System prompt changes made through `/system_prompt` are persisted back to `confi
 | **max_messages** | The maximum number of messages allowed in a reply chain. When exceeded, the oldest messages are dropped.<br /><br />Default: `25` |
 | **use_plain_responses** | When set to `true` the bot will use plaintext responses instead of embeds. Plaintext responses have a shorter character limit so the bot's messages may split more often.<br /><br />Default: `false`<br /><br />**Also disables streamed responses and warning messages.** |
 | **allow_dms** | Set to `false` to disable direct message access.<br /><br />Default: `true` |
+| **wake_names** | Optional names that can wake the bot in public channels without an @ mention, for example `agentcord`. Matching is case-insensitive and requires a boundary around the configured name so it does not match inside longer words. |
+| **features** | Feature flags for `tools`, `memory`, and `codex_auth_file` integration paths. Keep `codex_auth_file` disabled unless you have explicitly mounted or configured a Codex auth file for your deployment. |
 | **permissions** | Configure access permissions for `users`, `roles` and `channels`, each with a list of `allowed_ids` and `blocked_ids`.<br /><br />Control which `users` are admins with `admin_ids`. Admins can change the model with `/model`, manage the system prompt with `/system_prompt` and `/show_system_prompt`, reload `config.yaml` with `/reload_config`, sync slash commands with `/sync_commands`, and DM the bot even if `allow_dms` is `false`.<br /><br />**Leave `allowed_ids` empty to allow ALL in that category.**<br /><br />**Role and channel permissions do not affect DMs.**<br /><br />**You can use [category](https://support.discord.com/hc/en-us/articles/115001580171-Channel-Categories-101) IDs to control channel permissions in groups.** |
 
 ### LLM settings:
 
 | Setting | Description |
 | --- | --- |
-| **providers** | Add the LLM providers you want to use, each with a `base_url` and optional `api_key` entry. Popular providers (`openai`, `openrouter`, `ollama`, etc.) are already included.<br /><br />**Only supports OpenAI compatible APIs.**<br /><br />**Some providers may need `extra_headers` / `extra_query` / `extra_body` entries for extra HTTP data. See the included `azure-openai` provider for an example.** |
+| **providers** | Add the LLM providers you want to use, each with a `base_url` and one secret-loading path: inline `api_key`, `api_key_env`, `api_key_file`, or `auth_mode: codex_auth_file_api_key` with `codex_auth_file`. Set `supports_tools: true` only for providers/models where you want safe skill execution enabled.<br /><br />**Only supports OpenAI compatible APIs.**<br /><br />**Some providers may need `extra_headers` / `extra_query` / `extra_body` entries for extra HTTP data. See the included `azure-openai` provider for an example.** |
 | **models** | Add the models you want to use in `<provider>/<model>: <parameters>` format (examples are included). When you run `/model` these models will show up as autocomplete suggestions.<br /><br />**Refer to each provider's documentation for supported parameters.**<br /><br />**The first model in your `models` list will be the default model at startup.**<br /><br />**Some vision models may need `:vision` added to the end of their name to enable image support.** |
-| **system_prompt** | Write anything you want to customize the bot's behavior!<br /><br />**Leave blank for no system prompt.**<br /><br />**You can use the `{date}` and `{time}` tags in your system prompt to insert the current date and time, based on your host computer's time zone.**<br /><br />This value is loaded at startup and can also be changed live with `/system_prompt`, which saves the new value back to `config.yaml`.<br /><br />For providers that support OpenAI-style message names (currently `openai` and `x-ai`), `agentcord` sends Discord user IDs in the `name` field and automatically appends guidance telling the model to mention users as `<@ID>`. For other providers, it is still recommended to include something like `"User messages are prefixed with their Discord ID as <@ID>. Use this format to mention users."` in your system prompt. |
+| **system_prompt** | Write anything you want to customize the bot's behavior!<br /><br />**Leave blank for no system prompt.**<br /><br />**You can use the `{date}` and `{time}` tags in your system prompt to insert the current date and time, based on your host computer's time zone.**<br /><br />This value is loaded from `config.yaml` at startup. Live updates from `/system_prompt` are stored under `data/memory/system/` so the runtime only writes inside the memory root.<br /><br />For providers that support OpenAI-style message names (currently `openai` and `x-ai`), `agentcord` sends Discord user IDs in the `name` field and automatically appends guidance telling the model to mention users as `<@ID>`. For other providers, it is still recommended to include something like `"User messages are prefixed with their Discord ID as <@ID>. Use this format to mention users."` in your system prompt. |
+| **tools** | Safe built-in skills. `web_search` uses the DuckDuckGo instant-answer backend through an allowlisted host. `web_fetch` is optional and only works for explicitly allowlisted hosts. All tool execution is read-only and bounded by host, timeout, byte, and result-count limits. |
+| **tool_max_rounds** | Maximum number of tool-execution rounds per assistant turn. Default: `3`. |
 
 3. Run the bot:
 
@@ -131,9 +143,15 @@ System prompt changes made through `/system_prompt` are persisted back to `confi
    docker compose up
    ```
 
-   The compose setup mounts `./config.yaml` into the container as `/app/config.yaml` with write access so admin prompt updates can be persisted.
+   The compose setup mounts `./config.yaml` read-only and mounts `./data/memory` as the only writable application state.
 
    If you use local providers such as Ollama, LM Studio, or vLLM on the host machine while llmcord runs in Docker, change their `base_url` values from `localhost` to `host.docker.internal`.
+
+   If you want to reuse the OpenAI API key that Codex writes locally after ChatGPT sign-in, configure the OpenAI provider with `auth_mode: codex_auth_file_api_key` and point `codex_auth_file` at your Codex auth file, typically `~/.codex/auth.json`. agentcord reads the generated `OPENAI_API_KEY` from that file; it does not use Codex OAuth access or refresh tokens directly.
+
+   If your Codex auth file only has ChatGPT tokens and no generated `OPENAI_API_KEY`, you can test the experimental `auth_mode: codex_chatgpt_token` path. This passes `tokens.access_token` as the bearer credential and is intentionally feature-flagged because OpenAI’s public docs do not currently describe it as a supported third-party/server-hosted API auth mode.
+
+   In Docker, that auth file is not mounted by default. Add a read-only bind mount such as `~/.codex/auth.json:/app/secrets/codex-auth.json:ro` and set `codex_auth_file: /app/secrets/codex-auth.json`.
 
 ## Docker image
 
@@ -144,8 +162,10 @@ System prompt changes made through `/system_prompt` are persisted back to `confi
 - Local run:
     ```bash
     docker run --rm \
+      --read-only \
       --add-host host.docker.internal:host-gateway \
-      -v "$(pwd)/config.yaml:/app/config.yaml" \
+      -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
+      -v "$(pwd)/data/memory:/app/data/memory" \
       agentcord:local
     ```
 - GitHub Actions publishes images to `ghcr.io/v5u2/agentcord`.

@@ -19,3 +19,5 @@
 !requirements.txt
 
 llmcord.my-updates.py
+.omx/
+data/

@@ -9,4 +9,6 @@ __pycache__/
 .venv/
 venv/
 config.yaml
+data/
+.omx/
 llmcord.my-updates.py

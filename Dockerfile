@@ -11,6 +11,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-COPY llmcord.py config-example.yaml README.md LICENSE.md ./
+COPY *.py config-example.yaml README.md LICENSE.md ./
+
+RUN mkdir -p /app/data/memory
 
 CMD ["python", "llmcord.py"]
