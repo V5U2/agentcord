@@ -24,6 +24,17 @@ class MemoryStoreTests(unittest.TestCase):
                 self.assertEqual(removed, 1)
                 self.assertFalse(any("James" in line for line in memory_store.list_memories(42, None)))
 
+    def test_normalize_facts_filters_unknowns_and_duplicates(self) -> None:
+        facts = memory_store.normalize_facts(
+            [
+                {"type": "preferred_name", "value": "James"},
+                {"type": "preferred_name", "value": "James"},
+                {"type": "unknown", "value": "ignored"},
+                {"type": "likes", "value": "telemetry"},
+            ]
+        )
+        self.assertEqual([(fact.fact_type, fact.value) for fact in facts], [("preferred_name", "James"), ("likes", "telemetry")])
+
 
 if __name__ == "__main__":
     unittest.main()

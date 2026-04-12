@@ -29,10 +29,31 @@ class SafeToolsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("rss_feed", tool_names)
 
     def test_openrouter_server_search_exposes_server_tool(self) -> None:
-        config = {"features": {"tools": True}, "tools": {"web_search": {"enabled": True, "backend": "openrouter_server", "engine": "auto", "max_results": 5}}}
+        config = {
+            "features": {"tools": True},
+            "tools": {
+                "web_search": {"enabled": True, "backend": "openrouter_server", "engine": "exa", "max_results": 5},
+                "rss_feed": {"enabled": True, "feeds": {"bbc_world": {"url": "https://feeds.bbci.co.uk/news/world/rss.xml"}}},
+            },
+        }
         tools = enabled_tools(config, "openrouter")
-        self.assertEqual(tools[0]["type"], "openrouter:web_search")
-        self.assertEqual(tools[0]["parameters"]["engine"], "auto")
+        self.assertEqual(tools, [{"type": "openrouter:web_search", "parameters": {"engine": "exa", "max_results": 5}}])
+        self.assertEqual(tools[0]["parameters"]["engine"], "exa")
+
+    def test_openrouter_server_search_is_not_exposed_to_other_providers(self) -> None:
+        config = {"features": {"tools": True}, "tools": {"web_search": {"enabled": True, "backend": "openrouter_server"}}}
+        self.assertEqual(enabled_tools(config, "openai"), [])
+
+    def test_rss_route_exposes_only_rss_tool(self) -> None:
+        config = {
+            "features": {"tools": True},
+            "tools": {
+                "web_search": {"enabled": True, "backend": "openrouter_server", "engine": "exa"},
+                "rss_feed": {"enabled": True, "feeds": {"bbc_world": {"url": "https://feeds.bbci.co.uk/news/world/rss.xml"}}},
+            },
+        }
+        tools = enabled_tools(config, "openrouter", "rss_feed")
+        self.assertEqual([tool["function"]["name"] for tool in tools], ["rss_feed"])
 
     async def test_disabled_tool_cannot_execute(self) -> None:
         config = {"features": {"tools": True}, "tools": {"web_fetch": {"enabled": False}}}

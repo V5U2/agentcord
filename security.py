@@ -21,6 +21,22 @@ def is_wake_name_match(content: str, wake_names: list[str]) -> bool:
     return any(re.search(rf"(^|\W){re.escape(name)}($|\W)", content, flags=re.IGNORECASE) for name in wake_names if name.strip())
 
 
+def parse_tool_route_decision(content: str) -> str | None:
+    try:
+        parsed = loads(content)
+    except JSONDecodeError:
+        start = content.find("{")
+        end = content.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        try:
+            parsed = loads(content[start : end + 1])
+        except JSONDecodeError:
+            return None
+    route = parsed.get("route") if isinstance(parsed, dict) else None
+    return route if route in {"openrouter_server", "rss_feed", "local_broker", "none"} else None
+
+
 def _memory_root() -> Path:
     return MEMORY_ROOT.resolve()
 

@@ -1,6 +1,6 @@
 import unittest
 
-from security import is_wake_name_match
+from security import is_wake_name_match, parse_tool_route_decision
 
 
 class WakeNameTests(unittest.TestCase):
@@ -13,6 +13,9 @@ class WakeNameTests(unittest.TestCase):
 
     def test_empty_names_do_not_match(self) -> None:
         self.assertFalse(is_wake_name_match("hello", [""]))
+
+    def test_parse_tool_route_decision_reads_json(self) -> None:
+        self.assertEqual(parse_tool_route_decision('{"route":"rss_feed"}'), "rss_feed")
 
 
 if __name__ == "__main__":
