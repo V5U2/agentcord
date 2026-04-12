@@ -79,7 +79,9 @@ def normalize_facts(
 ) -> list[MemoryFact]:
     facts: list[MemoryFact] = []
     seen = set()
-    allowed = tuple(allowed_fact_types)
+    allowed = tuple(fact_type for fact_type in allowed_fact_types if fact_type in DEFAULT_ALLOWED_FACT_TYPES)
+    if not allowed:
+        return []
     for candidate in candidates:
         if isinstance(candidate, MemoryFact):
             fact_type = candidate.fact_type

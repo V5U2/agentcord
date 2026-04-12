@@ -52,6 +52,13 @@ class MemoryStoreTests(unittest.TestCase):
         )
         self.assertEqual([(fact.fact_type, fact.value) for fact in facts], [("projects", "agentcord")])
 
+    def test_normalize_facts_ignores_non_safe_configured_types(self) -> None:
+        facts = memory_store.normalize_facts(
+            [{"type": "api_token", "value": "secret"}],
+            allowed_fact_types=("api_token",),
+        )
+        self.assertEqual(facts, [])
+
     def test_render_memory_grounding_context_includes_recent_messages(self) -> None:
         context = memory_store.render_memory_grounding_context(
             42,

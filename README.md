@@ -338,7 +338,7 @@ features:
   memory: true
 ```
 
-Optional model-assisted extraction:
+Model-assisted extraction for new memory writes:
 
 ```yaml
 memory:
@@ -374,10 +374,10 @@ memory:
 
 The memory subsystem stores small typed facts only. It does not store raw chat transcripts and does not allow the model to write arbitrary files.
 
-When `memory.model_assisted: true`, the active model also gets a separate bounded extraction pass that can propose additional memory candidates, but only into the existing typed schema. That extraction pass now includes:
+When `memory.model_assisted: true`, the active model gets a bounded extraction pass that can propose additional memory candidates, but only into the existing typed schema. If `memory.model_assisted` is `false`, the current implementation does not write new memory facts. That extraction pass now includes:
 
 - the latest triggering message
-- the last `memory.context_message_lookback` text messages from the same channel before it
+- the last `memory.context_message_lookback` text messages from the same user in that channel before it
 - the current user ID as the target identity
 
 This gives the model more conversation grounding while still limiting what can be remembered.

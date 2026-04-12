@@ -177,7 +177,12 @@ def memory_config(current_config: dict[str, Any]) -> dict[str, Any]:
 def allowed_memory_fact_types(current_config: dict[str, Any]) -> tuple[str, ...]:
     configured = memory_config(current_config).get("allowed_fact_types")
     if isinstance(configured, list) and configured:
-        return tuple(str(item).strip() for item in configured if str(item).strip())
+        allowed = tuple(
+            fact_type
+            for fact_type in (str(item).strip() for item in configured if str(item).strip())
+            if fact_type in DEFAULT_ALLOWED_FACT_TYPES
+        )
+        return allowed or DEFAULT_ALLOWED_FACT_TYPES
     return DEFAULT_ALLOWED_FACT_TYPES
 
 
@@ -243,6 +248,8 @@ async def recent_channel_messages_for_memory(new_msg: discord.Message, lookback:
 
     recent = []
     async for message in new_msg.channel.history(before=new_msg, limit=lookback):
+        if message.author.id != new_msg.author.id:
+            continue
         content = " ".join((message.content or "").split())
         if not content:
             continue
@@ -790,7 +797,17 @@ async def on_message(new_msg: discord.Message) -> None:
             guild_id=getattr(new_msg.guild, "id", None),
             context_messages=len(recent_messages),
         )
-        model_memory_raw = await extract_model_memory_facts(openai_client, model, provider, grounding_context, extra_headers, extra_query, extra_body, config)
+        try:
+            model_memory_raw = await extract_model_memory_facts(openai_client, model, provider, grounding_context, extra_headers, extra_query, extra_body, config)
+        except Exception as exc:
+            audit_log(
+                "memory_model_extract_failed",
+                trace_id=trace_id,
+                user_id=new_msg.author.id,
+                guild_id=getattr(new_msg.guild, "id", None),
+                error=str(exc),
+            )
+            model_memory_raw = []
         audit_log(
             "memory_model_candidates",
             trace_id=trace_id,
