@@ -12,6 +12,15 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./data/memory:/app/data/memory
-      # For auth_mode: codex_auth_file_api_key in Docker, mount a Codex auth file
-      # and set codex_auth_file: /app/secrets/codex-auth.json in config.yaml.
-      # - ~/.codex/auth.json:/app/secrets/codex-auth.json:ro
+      - ./data/codex:/app/secrets/codex:ro
+
+  codex-auth:
+    image: node:22-slim
+    profiles:
+      - auth
+    working_dir: /work
+    command: sh -lc "npm install -g @openai/codex && codex login --device-auth"
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./data/codex:/root/.codex
