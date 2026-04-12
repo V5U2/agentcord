@@ -368,6 +368,8 @@ memory:
     - communication_style
   extraction_prompt: |
     Extract only small, non-sensitive user memory facts...
+    Allowed types:
+    {allowed_fact_types}
 ```
 
 The memory subsystem stores small typed facts only. It does not store raw chat transcripts and does not allow the model to write arbitrary files.
@@ -404,7 +406,7 @@ Allowed output schema:
 
 Those candidates are validated, deduplicated, length-limited, and then saved. The model is allowed to be somewhat looser about inferring stable preferences or context from the bounded recent conversation window, but it still cannot write arbitrary memory outside the approved schema.
 
-Both the allowed fact types and the extraction guidance are configurable through `memory.allowed_fact_types` and `memory.extraction_prompt`.
+Both the allowed fact types and the extraction guidance are configurable through `memory.allowed_fact_types` and `memory.extraction_prompt`. The `{allowed_fact_types}` placeholder is filled automatically when the extraction prompt is sent to the model, so you do not need to duplicate the list manually inside the prompt text.
 
 Memory is scoped by user and guild/DM and stored under `data/memory`. Users can inspect or delete their own memory:
 

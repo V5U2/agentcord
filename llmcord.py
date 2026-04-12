@@ -195,17 +195,19 @@ async def extract_model_memory_facts(
     if not cfg.get("model_assisted", False):
         return []
     if provider in {"openrouter", "openai", "x-ai", "google", "mistral", "groq"}:
-        prompt = cfg.get(
+        allowed_types = ", ".join(allowed_memory_fact_types(current_config))
+        prompt_template = cfg.get(
             "extraction_prompt",
             (
                 "Extract only small, non-sensitive user memory facts about the target user from the message and recent conversation context. "
-                f"Allowed types: {', '.join(allowed_memory_fact_types(current_config))}. "
+                "Allowed types: {allowed_fact_types}. "
                 "Be somewhat loose: infer concise, useful preferences or context when strongly implied by the conversation, but do not invent facts. "
                 "Return strict JSON only in the form "
                 '{"facts":[{"type":"preferred_name","value":"James"}]}. '
                 'If there is nothing worth remembering, return {"facts":[]}.'
             ),
         )
+        prompt = prompt_template.replace("{allowed_fact_types}", allowed_types)
         response = await openai_client.chat.completions.create(
             model=model,
             messages=[

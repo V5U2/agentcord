@@ -198,9 +198,7 @@ memory:
     message and recent conversation context.
 
     Allowed types:
-    preferred_name, nickname, pronouns, likes, dislikes, timezone, favorite_team,
-    favorite_game, location, work_context, personal_context, preference, interests,
-    hobbies, goals, projects, role, expertise, communication_style.
+    {allowed_fact_types}
 
     Be somewhat loose: infer concise, useful preferences or context when strongly
     implied by the conversation, but do not invent facts.
