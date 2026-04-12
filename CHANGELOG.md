@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/V5U2/agentcord/compare/v1.0.0...v1.1.0) (2026-04-12)
+
+
+### Features
+
+* refine prompt routing and clanker behavior ([fb38619](https://github.com/V5U2/agentcord/commit/fb38619294ea95afaed1519ec39e07b25fd8c3ff))
+
 ## 1.0.0 (2026-04-12)
 
 
