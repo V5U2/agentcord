@@ -171,4 +171,40 @@ tool_max_rounds: 3
 memory:
   model_assisted: true
   ttl_days: 30
-  input_max_chars: 500
+  input_max_chars: 1200
+  context_message_lookback: 4
+  allowed_fact_types:
+    - preferred_name
+    - nickname
+    - pronouns
+    - likes
+    - dislikes
+    - timezone
+    - favorite_team
+    - favorite_game
+    - location
+    - work_context
+    - personal_context
+    - preference
+    - interests
+    - hobbies
+    - goals
+    - projects
+    - role
+    - expertise
+    - communication_style
+  extraction_prompt: |
+    Extract only small, non-sensitive user memory facts about the target user from the
+    message and recent conversation context.
+
+    Allowed types:
+    {allowed_fact_types}
+
+    Be somewhat loose: infer concise, useful preferences or context when strongly
+    implied by the conversation, but do not invent facts.
+
+    Return strict JSON only in the form:
+    {"facts":[{"type":"preferred_name","value":"James"}]}
+
+    If there is nothing worth remembering, return:
+    {"facts":[]}

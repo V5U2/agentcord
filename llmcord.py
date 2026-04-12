@@ -2,6 +2,7 @@ import asyncio
 from base64 import b64encode
 from dataclasses import dataclass, field
 from datetime import datetime
+from json import JSONDecodeError, loads
 import logging
 from typing import Any, Literal, Optional
 
@@ -27,7 +28,7 @@ from openai import AsyncOpenAI
 import yaml
 
 from clanker_store import add_clanker, is_clanker, list_clanker_channels, list_clankers, remove_clanker
-from memory_store import forget_memories, list_memories, normalize_facts, remember_facts, remember_text, render_memory_context
+from memory_store import DEFAULT_ALLOWED_FACT_TYPES, forget_memories, list_memories, normalize_facts, remember_facts, render_memory_context, render_memory_grounding_context
 from safe_tools import enabled_tools, execute_tool_call
 from security import (
     CODEX_CHATGPT_TOKEN_MODE,
@@ -108,6 +109,10 @@ def feature_enabled(current_config: dict[str, Any], feature_name: str) -> bool:
     return bool(current_config.get("features", {}).get(feature_name, False))
 
 
+def message_trace_id(message_id: int) -> str:
+    return f"msg-{message_id}"
+
+
 async def select_tool_route(
     openai_client: AsyncOpenAI,
     model: str,
@@ -117,6 +122,7 @@ async def select_tool_route(
     extra_headers: Any,
     extra_query: Any,
     extra_body: Any,
+    trace_id: str,
 ) -> str | None:
     if not feature_enabled(config, "tools"):
         return None
@@ -153,7 +159,14 @@ async def select_tool_route(
         extra_body=extra_body,
     )
     route = parse_tool_route_decision(response.choices[0].message.content or "") or None
-    audit_log("tool_route_selected", provider=provider, route=route or "none", rss_feeds=rss_feed_names[:8], query=user_text[:120])
+    audit_log(
+        "tool_route_selected",
+        trace_id=trace_id,
+        provider=provider,
+        route=route or "none",
+        rss_feeds=rss_feed_names[:8],
+        query=user_text[:120],
+    )
     return route
 
 
@@ -161,23 +174,50 @@ def memory_config(current_config: dict[str, Any]) -> dict[str, Any]:
     return current_config.get("memory", {}) or {}
 
 
-async def extract_model_memory_facts(openai_client: AsyncOpenAI, model: str, provider: str, text: str, extra_headers: Any, extra_query: Any, extra_body: Any, current_config: dict[str, Any]) -> list[dict[str, str]]:
+def allowed_memory_fact_types(current_config: dict[str, Any]) -> tuple[str, ...]:
+    configured = memory_config(current_config).get("allowed_fact_types")
+    if isinstance(configured, list) and configured:
+        allowed = tuple(
+            fact_type
+            for fact_type in (str(item).strip() for item in configured if str(item).strip())
+            if fact_type in DEFAULT_ALLOWED_FACT_TYPES
+        )
+        return allowed or DEFAULT_ALLOWED_FACT_TYPES
+    return DEFAULT_ALLOWED_FACT_TYPES
+
+
+async def extract_model_memory_facts(
+    openai_client: AsyncOpenAI,
+    model: str,
+    provider: str,
+    grounding_context: str,
+    extra_headers: Any,
+    extra_query: Any,
+    extra_body: Any,
+    current_config: dict[str, Any],
+) -> list[dict[str, str]]:
     cfg = memory_config(current_config)
     if not cfg.get("model_assisted", False):
         return []
     if provider in {"openrouter", "openai", "x-ai", "google", "mistral", "groq"}:
-        prompt = (
-            "Extract only small, non-sensitive user memory facts from the message. "
-            "Allowed types: preferred_name, likes, dislikes, timezone. "
-            "Return strict JSON only in the form "
-            '{"facts":[{"type":"preferred_name","value":"James"}]}. '
-            "If there is nothing worth remembering, return {\"facts\":[]}."
+        allowed_types = ", ".join(allowed_memory_fact_types(current_config))
+        prompt_template = cfg.get(
+            "extraction_prompt",
+            (
+                "Extract only small, non-sensitive user memory facts about the target user from the message and recent conversation context. "
+                "Allowed types: {allowed_fact_types}. "
+                "Be somewhat loose: infer concise, useful preferences or context when strongly implied by the conversation, but do not invent facts. "
+                "Return strict JSON only in the form "
+                '{"facts":[{"type":"preferred_name","value":"James"}]}. '
+                'If there is nothing worth remembering, return {"facts":[]}.'
+            ),
         )
+        prompt = prompt_template.replace("{allowed_fact_types}", allowed_types)
         response = await openai_client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": text[: int(cfg.get("input_max_chars", 500))]},
+                {"role": "user", "content": grounding_context[: int(cfg.get("input_max_chars", 1200))]},
             ],
             extra_headers=extra_headers,
             extra_query=extra_query,
@@ -202,6 +242,22 @@ async def extract_model_memory_facts(openai_client: AsyncOpenAI, model: str, pro
     return []
 
 
+async def recent_channel_messages_for_memory(new_msg: discord.Message, lookback: int) -> list[dict[str, Any]]:
+    if lookback <= 0:
+        return []
+
+    recent = []
+    async for message in new_msg.channel.history(before=new_msg, limit=lookback):
+        if message.author.id != new_msg.author.id:
+            continue
+        content = " ".join((message.content or "").split())
+        if not content:
+            continue
+        recent.append({"author_id": message.author.id, "content": content})
+    recent.reverse()
+    return recent
+
+
 def clanker_cooldown_key(channel_id: int, author_id: int) -> tuple[int, int]:
     return (channel_id, author_id)
 
@@ -224,6 +280,18 @@ def clanker_proactive_elapsed(channel_id: int, interval_seconds: int) -> bool:
 
 def mark_clanker_proactive(channel_id: int) -> None:
     clanker_last_proactive_times[channel_id] = datetime.now().timestamp()
+
+
+def clanker_message_targets_agentcord(message: discord.Message) -> bool:
+    if discord_bot.user is None:
+        return False
+    if discord_bot.user in message.mentions:
+        return True
+    if message.reference and getattr(message.reference, "message_id", None):
+        referenced = message.reference.cached_message
+        if referenced is not None:
+            return referenced.author == discord_bot.user
+    return False
 
 
 async def generate_clanker_beef(channel_id: int, target_id: int, label: str, current_config: dict[str, Any]) -> str:
@@ -557,6 +625,7 @@ async def on_message(new_msg: discord.Message) -> None:
         and new_msg.author.bot
         and new_msg.author != discord_bot.user
         and is_clanker(new_msg.channel.id, new_msg.author.id)
+        and clanker_message_targets_agentcord(new_msg)
         and clanker_cooldown_elapsed(new_msg.channel.id, new_msg.author.id, int(clanker_config.get("cooldown_seconds", 90)))
     )
 
@@ -605,12 +674,23 @@ async def on_message(new_msg: discord.Message) -> None:
     extra_query = provider_config.get("extra_query")
     extra_body = (provider_config.get("extra_body") or {}) | (model_parameters or {}) or None
 
+    trace_id = message_trace_id(new_msg.id)
     accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
     accept_usernames = any(provider_slash_model.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
     tool_route = None
     if provider_config.get("supports_tools", False):
-        tool_route = await select_tool_route(openai_client, model, new_msg.content, config, provider, extra_headers, extra_query, extra_body)
+        tool_route = await select_tool_route(openai_client, model, new_msg.content, config, provider, extra_headers, extra_query, extra_body, trace_id)
     tool_schemas = enabled_tools(config, provider, tool_route) if feature_enabled(config, "tools") and provider_config.get("supports_tools", False) else []
+    audit_log(
+        "tool_route_exposed",
+        trace_id=trace_id,
+        provider=provider,
+        route=tool_route or "none",
+        tools=[
+            tool.get("type") if tool.get("type") != "function" else f"function:{tool['function']['name']}"
+            for tool in tool_schemas
+        ],
+    )
 
     max_text = config.get("max_text", 100000)
     max_images = config.get("max_images", 5) if accept_images else 0
@@ -699,7 +779,8 @@ async def on_message(new_msg: discord.Message) -> None:
             curr_msg = curr_node.parent_msg
 
     logging.info(
-        "Message received (user ID: %s, attachments: %s, conversation length: %s): %s",
+        "[%s] Message received (user ID: %s, attachments: %s, conversation length: %s): %s",
+        trace_id,
         new_msg.author.id,
         len(new_msg.attachments),
         len(messages),
@@ -707,19 +788,70 @@ async def on_message(new_msg: discord.Message) -> None:
     )
 
     if feature_enabled(config, "memory"):
-        remembered_facts = remember_text(new_msg.author.id, getattr(new_msg.guild, "id", None), new_msg.content)
-        model_memory_facts = normalize_facts(
-            await extract_model_memory_facts(openai_client, model, provider, new_msg.content, extra_headers, extra_query, extra_body, config)
+        recent_messages = await recent_channel_messages_for_memory(new_msg, int(memory_config(config).get("context_message_lookback", 4)))
+        grounding_context = render_memory_grounding_context(new_msg.author.id, recent_messages, new_msg.content)
+        audit_log(
+            "memory_grounding_built",
+            trace_id=trace_id,
+            user_id=new_msg.author.id,
+            guild_id=getattr(new_msg.guild, "id", None),
+            context_messages=len(recent_messages),
         )
+        try:
+            model_memory_raw = await extract_model_memory_facts(openai_client, model, provider, grounding_context, extra_headers, extra_query, extra_body, config)
+        except Exception as exc:
+            audit_log(
+                "memory_model_extract_failed",
+                trace_id=trace_id,
+                user_id=new_msg.author.id,
+                guild_id=getattr(new_msg.guild, "id", None),
+                error=str(exc),
+            )
+            model_memory_raw = []
+        audit_log(
+            "memory_model_candidates",
+            trace_id=trace_id,
+            user_id=new_msg.author.id,
+            guild_id=getattr(new_msg.guild, "id", None),
+            candidate_count=len(model_memory_raw),
+        )
+        model_memory_facts = normalize_facts(
+            model_memory_raw,
+            allowed_fact_types=allowed_memory_fact_types(config),
+        )
+        remembered_facts = []
         if model_memory_facts:
             remembered_facts = remember_facts(
                 new_msg.author.id,
                 getattr(new_msg.guild, "id", None),
-                remembered_facts + model_memory_facts,
+                model_memory_facts,
                 ttl_days=int(memory_config(config).get("ttl_days", 30)),
+                allowed_fact_types=allowed_memory_fact_types(config),
+            )
+            audit_log(
+                "memory_model_assisted",
+                trace_id=trace_id,
+                user_id=new_msg.author.id,
+                guild_id=getattr(new_msg.guild, "id", None),
+                context_messages=len(recent_messages),
+                fact_types=[fact.fact_type for fact in model_memory_facts],
             )
         if remembered_facts:
-            audit_log("memory_extracted", user_id=new_msg.author.id, guild_id=getattr(new_msg.guild, "id", None), fact_types=[fact.fact_type for fact in remembered_facts])
+            audit_log(
+                "memory_extracted",
+                trace_id=trace_id,
+                user_id=new_msg.author.id,
+                guild_id=getattr(new_msg.guild, "id", None),
+                fact_types=[fact.fact_type for fact in remembered_facts],
+            )
+        else:
+            audit_log(
+                "memory_extracted",
+                trace_id=trace_id,
+                user_id=new_msg.author.id,
+                guild_id=getattr(new_msg.guild, "id", None),
+                fact_types=[],
+            )
 
         if memory_context := render_memory_context(new_msg.author.id, getattr(new_msg.guild, "id", None)):
             messages.append(dict(role="system", content=memory_context))
