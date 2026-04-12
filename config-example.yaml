@@ -11,6 +11,16 @@ max_messages: 25
 use_plain_responses: false
 allow_dms: true
 
+# Optional non-mention wake names for public channels.
+# Matching is case-insensitive and requires a word/non-word boundary around the name.
+wake_names:
+  - agentcord
+
+features:
+  tools: true
+  memory: true
+  codex_auth_file: false
+
 permissions:
   users:
     admin_ids: []
@@ -50,7 +60,21 @@ providers:
 
   openai:
     base_url: https://api.openai.com/v1
-    api_key: 
+    supports_tools: true
+    # Standard API-key flow:
+    api_key_env: OPENAI_API_KEY
+
+    # Optional Codex auth-file API key reuse:
+    # auth_mode: codex_auth_file_api_key
+    # codex_auth_file: ~/.codex/auth.json
+    # In Docker, bind-mount this file and use a container path instead, e.g.
+    # codex_auth_file: /app/secrets/codex-auth.json
+    #
+    # Experimental ChatGPT sign-in token reuse:
+    # auth_mode: codex_chatgpt_token
+    # codex_auth_file: ~/.codex/auth.json
+    # This uses tokens.access_token from Codex auth.json and may not be accepted
+    # by OpenAI API endpoints; prefer codex_auth_file_api_key when available.
 
   openrouter:
     base_url: https://openrouter.ai/api/v1
@@ -88,3 +112,20 @@ system_prompt: |
   Today's date is {date}. The current time is {time}.
 
   User messages are prefixed with their Discord ID as <@ID>. Use this format to mention users.
+
+tools:
+  web_search:
+    enabled: true
+    allowed_hosts:
+      - api.duckduckgo.com
+    timeout_seconds: 10
+    max_results: 5
+    max_response_chars: 2000
+
+  web_fetch:
+    enabled: false
+    allowed_hosts: []
+    timeout_seconds: 10
+    max_response_chars: 4000
+
+tool_max_rounds: 3

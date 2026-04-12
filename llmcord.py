@@ -26,6 +26,20 @@ except ImportError:
 from openai import AsyncOpenAI
 import yaml
 
+from memory_store import forget_memories, list_memories, remember_text, render_memory_context
+from safe_tools import enabled_tools, execute_tool_call
+from security import (
+    CODEX_CHATGPT_TOKEN_MODE,
+    CODEX_AUTH_FILE_API_KEY_MODE,
+    audit_log,
+    clear_system_prompt_override,
+    is_wake_name_match,
+    load_system_prompt,
+    redact_value,
+    resolve_provider_api_key,
+    save_system_prompt_override,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s: %(message)s",
@@ -48,16 +62,8 @@ def get_config(filename: str = "config.yaml") -> dict[str, Any]:
         return yaml.safe_load(file)
 
 
-def save_system_prompt_to_config(prompt: str, filename: str = "config.yaml") -> None:
-    config_data = get_config(filename)
-    config_data["system_prompt"] = prompt
-
-    with open(filename, "w", encoding="utf-8") as file:
-        yaml.dump(config_data, file, default_flow_style=False, allow_unicode=True)
-
-
 def load_system_prompt_from_config(filename: str = "config.yaml") -> str:
-    return get_config(filename).get("system_prompt", "")
+    return load_system_prompt(get_config(filename).get("system_prompt", ""))
 
 
 config = get_config()
@@ -69,10 +75,14 @@ last_task_time = 0
 
 intents = discord.Intents.default()
 intents.message_content = True
-activity = discord.CustomActivity(name=(config.get("status_message") or "github.com/jakobdylanc/llmcord")[:128])
+activity = discord.CustomActivity(name=(config.get("status_message") or "github.com/V5U2/agentcord")[:128])
 discord_bot = commands.Bot(intents=intents, activity=activity, command_prefix=None)
 
 httpx_client = httpx.AsyncClient()
+
+
+def feature_enabled(current_config: dict[str, Any], feature_name: str) -> bool:
+    return bool(current_config.get("features", {}).get(feature_name, False))
 
 
 @dataclass
@@ -139,13 +149,20 @@ async def system_prompt_command(interaction: discord.Interaction, prompt: Option
             output = "No system prompt is currently set."
     else:
         try:
-            await asyncio.to_thread(save_system_prompt_to_config, prompt)
+            if prompt.strip():
+                await asyncio.to_thread(save_system_prompt_override, prompt)
+            else:
+                await asyncio.to_thread(clear_system_prompt_override)
         except Exception as exc:
             logging.exception("Failed to persist system prompt")
             output = f"Failed to update system prompt: {exc}"
         else:
-            current_system_prompt = prompt
-            output = f"System prompt updated successfully and saved persistently!\n\nNew prompt:\n```\n{prompt[:1900]}{'...' if len(prompt) > 1900 else ''}\n```"
+            current_system_prompt = prompt.strip()
+            output = (
+                f"System prompt updated successfully and saved under the memory store.\n\nNew prompt:\n```\n{prompt[:1900]}{'...' if len(prompt) > 1900 else ''}\n```"
+                if prompt.strip()
+                else "System prompt override cleared. The bot will fall back to `config.yaml`."
+            )
             logging.info("System prompt changed by user %s", interaction.user.id)
 
     await interaction.response.send_message(output, ephemeral=(interaction.channel.type == discord.ChannelType.private))
@@ -216,6 +233,30 @@ async def show_system_prompt_command(interaction: discord.Interaction) -> None:
     await interaction.response.send_message("No system prompt is currently set.", ephemeral=True)
 
 
+@discord_bot.tree.command(name="memory", description="Show the small typed facts agentcord remembers about you")
+async def memory_command(interaction: discord.Interaction) -> None:
+    command_config = await asyncio.to_thread(get_config)
+    if not feature_enabled(command_config, "memory"):
+        await interaction.response.send_message("Memory is disabled.", ephemeral=True)
+        return
+
+    memories = list_memories(interaction.user.id, getattr(interaction.guild, "id", None))
+    output = "No stored memory for you." if not memories else "Stored memory:\n" + "\n".join(f"- {item}" for item in memories)
+    await interaction.response.send_message(output, ephemeral=True)
+
+
+@discord_bot.tree.command(name="forget_memory", description="Delete stored memory facts about you")
+async def forget_memory_command(interaction: discord.Interaction, match: Optional[str] = None) -> None:
+    command_config = await asyncio.to_thread(get_config)
+    if not feature_enabled(command_config, "memory"):
+        await interaction.response.send_message("Memory is disabled.", ephemeral=True)
+        return
+
+    removed = forget_memories(interaction.user.id, getattr(interaction.guild, "id", None), match)
+    output = "No matching memories were removed." if removed == 0 else f"Removed {removed} stored memory entr{'y' if removed == 1 else 'ies'}."
+    await interaction.response.send_message(output, ephemeral=True)
+
+
 @discord_bot.event
 async def on_ready() -> None:
     if client_id := config.get("client_id"):
@@ -233,15 +274,17 @@ async def on_message(new_msg: discord.Message) -> None:
     global current_system_prompt, last_task_time
 
     is_dm = new_msg.channel.type == discord.ChannelType.private
-
-    if (not is_dm and discord_bot.user not in new_msg.mentions) or new_msg.author.bot:
+    if new_msg.author.bot:
         return
 
     role_ids = set(role.id for role in getattr(new_msg.author, "roles", ()))
     channel_ids = set(filter(None, (new_msg.channel.id, getattr(new_msg.channel, "parent_id", None), getattr(new_msg.channel, "category_id", None))))
 
     config = await asyncio.to_thread(get_config)
-    current_system_prompt = config.get("system_prompt", "")
+    current_system_prompt = load_system_prompt(config.get("system_prompt", ""))
+
+    if not is_dm and discord_bot.user not in new_msg.mentions and not is_wake_name_match(new_msg.content, config.get("wake_names", [])):
+        return
 
     allow_dms = config.get("allow_dms", True)
 
@@ -270,7 +313,10 @@ async def on_message(new_msg: discord.Message) -> None:
     provider_config = config["providers"][provider]
 
     base_url = provider_config["base_url"]
-    api_key = provider_config.get("api_key", "sk-no-key-required")
+    if provider_config.get("auth_mode") in (CODEX_AUTH_FILE_API_KEY_MODE, CODEX_CHATGPT_TOKEN_MODE) and not config.get("features", {}).get("codex_auth_file", False):
+        raise RuntimeError("The selected provider requires features.codex_auth_file=true")
+
+    api_key = resolve_provider_api_key(provider, provider_config)
     openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
 
     model_parameters = config["models"].get(provider_slash_model, None)
@@ -281,6 +327,7 @@ async def on_message(new_msg: discord.Message) -> None:
 
     accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
     accept_usernames = any(provider_slash_model.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
+    tool_schemas = enabled_tools(config) if feature_enabled(config, "tools") and provider_config.get("supports_tools", False) else []
 
     max_text = config.get("max_text", 100000)
     max_images = config.get("max_images", 5) if accept_images else 0
@@ -368,7 +415,21 @@ async def on_message(new_msg: discord.Message) -> None:
 
             curr_msg = curr_node.parent_msg
 
-    logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
+    logging.info(
+        "Message received (user ID: %s, attachments: %s, conversation length: %s): %s",
+        new_msg.author.id,
+        len(new_msg.attachments),
+        len(messages),
+        str(redact_value(new_msg.content))[:200],
+    )
+
+    if feature_enabled(config, "memory"):
+        remembered_facts = remember_text(new_msg.author.id, getattr(new_msg.guild, "id", None), new_msg.content)
+        if remembered_facts:
+            audit_log("memory_extracted", user_id=new_msg.author.id, guild_id=getattr(new_msg.guild, "id", None), fact_types=[fact.fact_type for fact in remembered_facts])
+
+        if memory_context := render_memory_context(new_msg.author.id, getattr(new_msg.guild, "id", None)):
+            messages.append(dict(role="system", content=memory_context))
 
     if current_system_prompt:
         now = datetime.now().astimezone()
@@ -384,7 +445,8 @@ async def on_message(new_msg: discord.Message) -> None:
     response_msgs = []
     response_contents = []
 
-    openai_kwargs = dict(model=model, messages=messages[::-1], stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
+    request_messages = messages[::-1]
+    openai_kwargs = dict(model=model, messages=request_messages, stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
 
     if use_plain_responses := config.get("use_plain_responses", False):
         max_message_length = 4000
@@ -400,49 +462,102 @@ async def on_message(new_msg: discord.Message) -> None:
         msg_nodes[response_msg.id] = MsgNode(parent_msg=new_msg)
         await msg_nodes[response_msg.id].lock.acquire()
 
+    async def complete_with_tools() -> str:
+        tool_messages = list(request_messages)
+        max_tool_rounds = int(config.get("tool_max_rounds", 3))
+
+        for _ in range(max_tool_rounds):
+            response = await openai_client.chat.completions.create(
+                model=model,
+                messages=tool_messages,
+                extra_headers=extra_headers,
+                extra_query=extra_query,
+                extra_body=extra_body,
+                tools=tool_schemas,
+            )
+            choice = response.choices[0]
+            message = choice.message
+            tool_calls = message.tool_calls or []
+            if not tool_calls:
+                return message.content or ""
+
+            tool_messages.append(
+                {
+                    "role": "assistant",
+                    "content": message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tool_call.id,
+                            "type": tool_call.type,
+                            "function": {"name": tool_call.function.name, "arguments": tool_call.function.arguments},
+                        }
+                        for tool_call in tool_calls
+                    ],
+                }
+            )
+
+            for tool_call in tool_calls:
+                audit_log("tool_invocation_requested", tool=tool_call.function.name)
+                try:
+                    tool_result = await execute_tool_call(tool_call.function.name, tool_call.function.arguments, config, httpx_client)
+                except Exception as exc:
+                    tool_result = f"Tool error: {exc}"
+                    audit_log("tool_invocation_failed", tool=tool_call.function.name, error=str(exc))
+                else:
+                    audit_log("tool_invocation_succeeded", tool=tool_call.function.name)
+
+                tool_messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": tool_result})
+
+        return "Tool execution limit reached before a final assistant response was produced."
+
     try:
         async with new_msg.channel.typing():
-            async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
-                if finish_reason != None:
-                    break
+            if tool_schemas:
+                final_content = await complete_with_tools()
+                for idx in range(0, max(len(final_content), 1), max_message_length):
+                    response_contents.append(final_content[idx : idx + max_message_length])
+            else:
+                async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
+                    if finish_reason != None:
+                        break
 
-                if not (choice := chunk.choices[0] if chunk.choices else None):
-                    continue
+                    if not (choice := chunk.choices[0] if chunk.choices else None):
+                        continue
 
-                finish_reason = choice.finish_reason
+                    finish_reason = choice.finish_reason
 
-                prev_content = curr_content or ""
-                curr_content = choice.delta.content or ""
+                    prev_content = curr_content or ""
+                    curr_content = choice.delta.content or ""
 
-                new_content = prev_content if finish_reason == None else (prev_content + curr_content)
+                    new_content = prev_content if finish_reason == None else (prev_content + curr_content)
 
-                if response_contents == [] and new_content == "":
-                    continue
+                    if response_contents == [] and new_content == "":
+                        continue
 
-                if start_next_msg := response_contents == [] or len(response_contents[-1] + new_content) > max_message_length:
-                    response_contents.append("")
+                    if start_next_msg := response_contents == [] or len(response_contents[-1] + new_content) > max_message_length:
+                        response_contents.append("")
 
-                response_contents[-1] += new_content
+                    response_contents[-1] += new_content
 
-                if not use_plain_responses:
-                    time_delta = datetime.now().timestamp() - last_task_time
+                    if not use_plain_responses:
+                        time_delta = datetime.now().timestamp() - last_task_time
 
-                    ready_to_edit = time_delta >= EDIT_DELAY_SECONDS
-                    msg_split_incoming = finish_reason == None and len(response_contents[-1] + curr_content) > max_message_length
-                    is_final_edit = finish_reason != None or msg_split_incoming
-                    is_good_finish = finish_reason != None and finish_reason.lower() in ("stop", "end_turn")
+                        ready_to_edit = time_delta >= EDIT_DELAY_SECONDS
+                        msg_split_incoming = finish_reason == None and len(response_contents[-1] + curr_content) > max_message_length
+                        is_final_edit = finish_reason != None or msg_split_incoming
+                        is_good_finish = finish_reason != None and finish_reason.lower() in ("stop", "end_turn")
 
-                    if start_next_msg or ready_to_edit or is_final_edit:
-                        embed.description = response_contents[-1] if is_final_edit else (response_contents[-1] + STREAMING_INDICATOR)
-                        embed.color = EMBED_COLOR_COMPLETE if msg_split_incoming or is_good_finish else EMBED_COLOR_INCOMPLETE
+                        if start_next_msg or ready_to_edit or is_final_edit:
+                            embed.description = response_contents[-1] if is_final_edit else (response_contents[-1] + STREAMING_INDICATOR)
+                            embed.color = EMBED_COLOR_COMPLETE if msg_split_incoming or is_good_finish else EMBED_COLOR_INCOMPLETE
 
-                        if start_next_msg:
-                            await reply_helper(embed=embed, silent=True)
-                        else:
-                            await asyncio.sleep(EDIT_DELAY_SECONDS - time_delta)
-                            await response_msgs[-1].edit(embed=embed)
+                            if start_next_msg:
+                                await reply_helper(embed=embed, silent=True)
+                            else:
+                                await asyncio.sleep(EDIT_DELAY_SECONDS - time_delta)
+                                await response_msgs[-1].edit(embed=embed)
 
-                        last_task_time = datetime.now().timestamp()
+                            last_task_time = datetime.now().timestamp()
 
             if use_plain_responses:
                 for content in response_contents:
