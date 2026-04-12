@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0](https://github.com/V5U2/agentcord/compare/v1.1.0...v1.2.0) (2026-04-12)
+
+
+### Features
+
+* improve memory grounding and clanker controls ([d25e46f](https://github.com/V5U2/agentcord/commit/d25e46f2b45db89a1bf8f508ec497c77ecd5785b))
+* improve memory grounding and clanker controls ([2421c42](https://github.com/V5U2/agentcord/commit/2421c42b69d47d86370e43f69ae6d1220c3ee205))
+
+
+### Bug Fixes
+
+* harden model-assisted memory extraction ([07cfab5](https://github.com/V5U2/agentcord/commit/07cfab5efb781aea89fb703328267c7a3a2d4a56))
+
 ## [1.1.0](https://github.com/V5U2/agentcord/compare/v1.0.0...v1.1.0) (2026-04-12)
 
 
