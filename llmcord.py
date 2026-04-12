@@ -327,7 +327,7 @@ async def on_message(new_msg: discord.Message) -> None:
 
     accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
     accept_usernames = any(provider_slash_model.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
-    tool_schemas = enabled_tools(config) if feature_enabled(config, "tools") and provider_config.get("supports_tools", False) else []
+    tool_schemas = enabled_tools(config, provider) if feature_enabled(config, "tools") and provider_config.get("supports_tools", False) else []
 
     max_text = config.get("max_text", 100000)
     max_images = config.get("max_images", 5) if accept_images else 0

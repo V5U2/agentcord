@@ -67,17 +67,18 @@ providers:
     # Optional Codex auth-file API key reuse:
     # auth_mode: codex_auth_file_api_key
     # codex_auth_file: ~/.codex/auth.json
-    # In Docker, bind-mount this file and use a container path instead, e.g.
-    # codex_auth_file: /app/secrets/codex-auth.json
+    # In Docker, run the codex-auth compose profile and use:
+    # codex_auth_file: /app/secrets/codex/auth.json
     #
     # Experimental ChatGPT sign-in token reuse:
     # auth_mode: codex_chatgpt_token
-    # codex_auth_file: ~/.codex/auth.json
+    # codex_auth_file: /app/secrets/codex/auth.json
     # This uses tokens.access_token from Codex auth.json and may not be accepted
     # by OpenAI API endpoints; prefer codex_auth_file_api_key when available.
 
   openrouter:
     base_url: https://openrouter.ai/api/v1
+    supports_tools: true
     api_key: 
 
   x-ai:
@@ -116,10 +117,13 @@ system_prompt: |
 tools:
   web_search:
     enabled: true
-    allowed_hosts:
-      - api.duckduckgo.com
+    # Use OpenRouter's server-side search tool for OpenRouter providers.
+    # Other supported local broker backends: firecrawl, duckduckgo_instant_answer.
+    backend: openrouter_server
+    engine: auto
     timeout_seconds: 10
     max_results: 5
+    max_total_results: 10
     max_response_chars: 2000
 
   web_fetch:
@@ -127,5 +131,21 @@ tools:
     allowed_hosts: []
     timeout_seconds: 10
     max_response_chars: 4000
+
+  rss_feed:
+    enabled: true
+    allowed_hosts:
+      - feeds.bbci.co.uk
+      - www.abc.net.au
+    timeout_seconds: 10
+    max_items: 5
+    max_response_chars: 4000
+    feeds:
+      bbc_world:
+        url: https://feeds.bbci.co.uk/news/world/rss.xml
+        description: BBC World News
+      abc_just_in:
+        url: https://www.abc.net.au/news/feed/51120/rss.xml
+        description: ABC News Just In
 
 tool_max_rounds: 3

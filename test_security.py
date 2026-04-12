@@ -20,22 +20,22 @@ class SecurityTests(unittest.TestCase):
     def test_resolve_provider_api_key_from_codex_auth_file(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             auth_file = Path(tmp_dir) / "auth.json"
-            auth_file.write_text(dumps({"OPENAI_API_KEY": "sk-codex-abc"}), encoding="utf-8")
+            auth_file.write_text(dumps({"OPENAI_API_KEY": "fixture-api-key"}), encoding="utf-8")
             api_key = security.resolve_provider_api_key(
                 "openai",
                 {"auth_mode": "codex_auth_file_api_key", "codex_auth_file": str(auth_file)},
             )
-        self.assertEqual(api_key, "sk-codex-abc")
+        self.assertEqual(api_key, "fixture-api-key")
 
     def test_resolve_provider_key_from_codex_chatgpt_token(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             auth_file = Path(tmp_dir) / "auth.json"
-            auth_file.write_text(dumps({"tokens": {"access_token": "chatgpt-access-token"}}), encoding="utf-8")
+            auth_file.write_text(dumps({"tokens": {"access_token": "fixture-value"}}), encoding="utf-8")
             api_key = security.resolve_provider_api_key(
                 "openai",
                 {"auth_mode": "codex_chatgpt_token", "codex_auth_file": str(auth_file)},
             )
-        self.assertEqual(api_key, "chatgpt-access-token")
+        self.assertEqual(api_key, "fixture-value")
 
 
 if __name__ == "__main__":

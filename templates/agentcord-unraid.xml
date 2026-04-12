@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>agentcord</Name>
+  <Repository>ghcr.io/v5u2/agentcord:latest</Repository>
+  <Registry>https://ghcr.io/v5u2/agentcord</Registry>
+  <Network>bridge</Network>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/V5U2/agentcord/issues</Support>
+  <Project>https://github.com/V5U2/agentcord</Project>
+  <Overview>agentcord is a self-hosted Discord LLM frontend with secure memory, safe built-in tools, and config-driven OpenAI-compatible providers.</Overview>
+  <Category>Tools:</Category>
+  <WebUI/>
+  <TemplateURL>https://raw.githubusercontent.com/V5U2/agentcord/main/templates/agentcord-unraid.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/V5U2/agentcord/main/icon.png</Icon>
+  <ExtraParams>--read-only --tmpfs /tmp</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Config File" Target="/app/config.yaml" Default="/mnt/user/appdata/agentcord/config.yaml" Mode="ro" Description="Path to agentcord config.yaml. Create this from config-example.yaml before starting the container." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/agentcord/config.yaml</Config>
+  <Config Name="Memory Store" Target="/app/data/memory" Default="/mnt/user/appdata/agentcord/memory" Mode="rw" Description="Only writable application state. Stores system prompt overrides and bounded user memory." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/agentcord/memory</Config>
+  <Config Name="Codex Auth File (Optional)" Target="/app/secrets/codex/auth.json" Default="" Mode="ro" Description="Optional read-only mount for Codex auth.json. If set, configure codex_auth_file: /app/secrets/codex/auth.json in config.yaml. You can generate this file with a separate Codex CLI container and inspect the login URL/code through Docker logs." Type="Path" Display="advanced" Required="false" Mask="true"/>
+</Container>

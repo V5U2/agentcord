@@ -11,6 +11,8 @@
 !.github/workflows/*.yml
 !docs/
 !docs/*.md
+!templates/
+!templates/*.xml
 
 !Dockerfile
 !.dockerignore
