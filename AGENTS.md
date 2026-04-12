@@ -35,6 +35,7 @@ Project-level instructions for coding agents working in this repository.
 - Preserve compatibility with OpenAI-compatible providers unless the task explicitly scopes a breaking change.
 - Treat this repository as an independent fork product, not a drop-in mirror of upstream. Keep the `agentcord` identity, release flow, and docs distinct even when syncing upstream fixes.
 - Treat documentation and verification as part of the same change, not optional follow-up work.
+- After any change that affects runtime behavior, config loading, dependencies, Docker packaging, or startup state, rebuild and/or restart the local Docker container or running app before handoff whenever required so testing is performed against the updated code, not a stale process.
 
 ## Release and commit rule
 

@@ -344,27 +344,67 @@ Optional model-assisted extraction:
 memory:
   model_assisted: true
   ttl_days: 30
-  input_max_chars: 500
+  input_max_chars: 1200
+  context_message_lookback: 4
+  allowed_fact_types:
+    - preferred_name
+    - nickname
+    - pronouns
+    - likes
+    - dislikes
+    - timezone
+    - favorite_team
+    - favorite_game
+    - location
+    - work_context
+    - personal_context
+    - preference
+    - interests
+    - hobbies
+    - goals
+    - projects
+    - role
+    - expertise
+    - communication_style
+  extraction_prompt: |
+    Extract only small, non-sensitive user memory facts...
 ```
 
 The memory subsystem stores small typed facts only. It does not store raw chat transcripts and does not allow the model to write arbitrary files.
 
-Recognized fact patterns include:
+When `memory.model_assisted: true`, the active model also gets a separate bounded extraction pass that can propose additional memory candidates, but only into the existing typed schema. That extraction pass now includes:
 
-- `my name is James`
-- `call me James`
-- `I like Formula 1`
-- `I dislike X`
-- `my timezone is Australia/Perth`
+- the latest triggering message
+- the last `memory.context_message_lookback` text messages from the same channel before it
+- the current user ID as the target identity
 
-When `memory.model_assisted: true`, the active model also gets a separate bounded extraction pass that can propose additional memory candidates, but only into the existing typed schema:
+This gives the model more conversation grounding while still limiting what can be remembered.
+
+Allowed output schema:
 
 - `preferred_name`
+- `nickname`
+- `pronouns`
 - `likes`
 - `dislikes`
 - `timezone`
+- `favorite_team`
+- `favorite_game`
+- `location`
+- `work_context`
+- `personal_context`
+- `preference`
+- `interests`
+- `hobbies`
+- `goals`
+- `projects`
+- `role`
+- `expertise`
+- `communication_style`
 
-Those candidates are validated, deduplicated, length-limited, and then merged with the deterministic regex facts before saving.
+Those candidates are validated, deduplicated, length-limited, and then saved. The model is allowed to be somewhat looser about inferring stable preferences or context from the bounded recent conversation window, but it still cannot write arbitrary memory outside the approved schema.
+
+Both the allowed fact types and the extraction guidance are configurable through `memory.allowed_fact_types` and `memory.extraction_prompt`.
 
 Memory is scoped by user and guild/DM and stored under `data/memory`. Users can inspect or delete their own memory:
 

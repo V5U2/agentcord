@@ -4,17 +4,36 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from json import JSONDecodeError
 from pathlib import Path
-import re
 from typing import Any
 
 from security import audit_log, memory_path, read_memory_json, write_memory_json
 
 MEMORY_NAMESPACE = "users"
 DEFAULT_TTL_DAYS = 30
-DEFAULT_MAX_FACTS = 12
-DEFAULT_MAX_BYTES = 4096
-ALLOWED_FACT_TYPES = ("preferred_name", "likes", "dislikes", "timezone")
-MAX_FACT_VALUE_LENGTH = 80
+DEFAULT_MAX_FACTS = 24
+DEFAULT_MAX_BYTES = 8192
+DEFAULT_ALLOWED_FACT_TYPES = (
+    "preferred_name",
+    "nickname",
+    "pronouns",
+    "likes",
+    "dislikes",
+    "timezone",
+    "favorite_team",
+    "favorite_game",
+    "location",
+    "work_context",
+    "personal_context",
+    "preference",
+    "interests",
+    "hobbies",
+    "goals",
+    "projects",
+    "role",
+    "expertise",
+    "communication_style",
+)
+MAX_FACT_VALUE_LENGTH = 160
 
 
 @dataclass(frozen=True)
@@ -53,33 +72,14 @@ def _save_store(user_id: int, guild_id: int | None, store: dict[str, Any], max_b
     write_memory_json(_memory_file(user_id, guild_id), payload)
 
 
-def extract_facts(text: str) -> list[MemoryFact]:
-    lowered = text.strip()
-    if not lowered:
-        return []
-
-    patterns: list[tuple[str, str]] = [
-        (r"\bmy name is ([A-Za-z0-9 _-]{1,40}?)(?:\s+and\b|[.,!?]|$)", "preferred_name"),
-        (r"\bcall me ([A-Za-z0-9 _-]{1,40}?)(?:\s+and\b|[.,!?]|$)", "preferred_name"),
-        (r"\bi like ([A-Za-z0-9 ,_'/-]{1,60}?)(?:\s+and\b|[.,!?]|$)", "likes"),
-        (r"\bi love ([A-Za-z0-9 ,_'/-]{1,60}?)(?:\s+and\b|[.,!?]|$)", "likes"),
-        (r"\bi dislike ([A-Za-z0-9 ,_'/-]{1,60}?)(?:\s+and\b|[.,!?]|$)", "dislikes"),
-        (r"\bi hate ([A-Za-z0-9 ,_'/-]{1,60}?)(?:\s+and\b|[.,!?]|$)", "dislikes"),
-        (r"\bmy timezone is ([A-Za-z0-9/_+-]{1,40}?)(?:\s+and\b|[.,!?]|$)", "timezone"),
-    ]
-
-    facts: list[MemoryFact] = []
-    for pattern, fact_type in patterns:
-        for match in re.finditer(pattern, lowered, flags=re.IGNORECASE):
-            value = " ".join(match.group(1).strip().split())
-            if value:
-                facts.append(MemoryFact(fact_type=fact_type, value=value))
-    return facts[:4]
-
-
-def normalize_facts(candidates: list[dict[str, Any] | MemoryFact]) -> list[MemoryFact]:
+def normalize_facts(
+    candidates: list[dict[str, Any] | MemoryFact],
+    *,
+    allowed_fact_types: tuple[str, ...] | list[str] = DEFAULT_ALLOWED_FACT_TYPES,
+) -> list[MemoryFact]:
     facts: list[MemoryFact] = []
     seen = set()
+    allowed = tuple(allowed_fact_types)
     for candidate in candidates:
         if isinstance(candidate, MemoryFact):
             fact_type = candidate.fact_type
@@ -87,7 +87,7 @@ def normalize_facts(candidates: list[dict[str, Any] | MemoryFact]) -> list[Memor
         else:
             fact_type = str(candidate.get("type", "")).strip()
             value = " ".join(str(candidate.get("value", "")).strip().split())
-        if fact_type not in ALLOWED_FACT_TYPES:
+        if fact_type not in allowed:
             continue
         if not value or len(value) > MAX_FACT_VALUE_LENGTH:
             continue
@@ -96,14 +96,20 @@ def normalize_facts(candidates: list[dict[str, Any] | MemoryFact]) -> list[Memor
             continue
         seen.add(key)
         facts.append(MemoryFact(fact_type=fact_type, value=value))
-    return facts[:4]
+    return facts[:8]
 
 
-def remember_text(user_id: int, guild_id: int | None, text: str, *, ttl_days: int = DEFAULT_TTL_DAYS, max_bytes: int = DEFAULT_MAX_BYTES) -> list[MemoryFact]:
-    facts = normalize_facts(extract_facts(text))
-    if not facts:
-        return []
-    return remember_facts(user_id, guild_id, facts, ttl_days=ttl_days, max_bytes=max_bytes)
+def render_memory_grounding_context(target_user_id: int, recent_messages: list[dict[str, Any]], latest_message: str) -> str:
+    lines = [f"Target user ID: {target_user_id}", "Recent conversation context:"]
+    for item in recent_messages:
+        author_id = item.get("author_id", "unknown")
+        content = " ".join(str(item.get("content", "")).split())
+        if not content:
+            continue
+        lines.append(f"- {author_id}: {content[:240]}")
+    lines.append("Latest message from target user:")
+    lines.append(latest_message[:500])
+    return "\n".join(lines)
 
 
 def remember_facts(
@@ -113,8 +119,9 @@ def remember_facts(
     *,
     ttl_days: int = DEFAULT_TTL_DAYS,
     max_bytes: int = DEFAULT_MAX_BYTES,
+    allowed_fact_types: tuple[str, ...] | list[str] = DEFAULT_ALLOWED_FACT_TYPES,
 ) -> list[MemoryFact]:
-    facts = normalize_facts(facts)
+    facts = normalize_facts(facts, allowed_fact_types=allowed_fact_types)
     if not facts:
         return []
 
