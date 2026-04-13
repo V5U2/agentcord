@@ -496,6 +496,12 @@ ghcr.io/v5u2/agentcord
 
 `release-please` manages SemVer releases from conventional commits on `main`.
 
+Image tags are published as:
+
+- `latest` for every commit to `main`
+- `stable` for every SemVer release tag (`v*.*.*`)
+- The release version number itself (for example `v1.2.3` / `1.2.3` depending on trigger context)
+
 ## Upstream
 
 This is a periodically synced fork, not a strict mirror.
