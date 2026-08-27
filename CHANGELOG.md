@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/V5U2/agentcord/compare/v1.2.0...v1.2.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* keep release image tags aligned with release triggers ([059a50a](https://github.com/V5U2/agentcord/commit/059a50a90c9e048b6c2c4d99356823b53220ec96))
+
 ## [1.2.0](https://github.com/V5U2/agentcord/compare/v1.1.0...v1.2.0) (2026-04-12)
 
 
