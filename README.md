@@ -494,7 +494,13 @@ GitHub Actions builds and publishes Docker images to:
 ghcr.io/v5u2/agentcord
 ```
 
-`release-please` manages SemVer releases from conventional commits on `main`.
+`release-please` manages SemVer releases from conventional commits on `main` and publishes the release image tags in the same workflow run.
+
+Image tags are published as:
+
+- `latest` for every commit to `main`
+- `stable` for every `release-please` SemVer release
+- The release version in both bare and Git tag forms (for example `1.2.3` and `v1.2.3`)
 
 ## Upstream
 
